@@ -1,0 +1,25 @@
+[package]
+name = "yama"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-trait = "0.1.73"
+color-eyre = "0.6.2"
+confy = "0.5.1"
+crossterm = "0.27.0"
+enum_dispatch = "0.3.12"
+env_logger = "0.10.0"
+futures = "0.3.28"
+google-youtube3 = "5.0.3"
+libmpv = {git = "https://github.com/ParadoxSpiral/libmpv-rs.git", rev = "3e6c389"}
+log = "0.4.20"
+ratatui = "0.23.0"
+serde = { version = "1.0.188", features = ["serde_derive"] }
+strum = { version = "0.25.0", features = ["derive"] }
+strum_macros = "0.25.2"
+tokio = { version = "1.32.0", features = ["full"] }
+zbus = { version = "3.14.1", features = ["tokio"] }
+
