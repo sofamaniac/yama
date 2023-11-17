@@ -1,11 +1,9 @@
 use std::{fmt::Display, sync::Arc};
 
 use libmpv::{FileState, Mpv};
-use zbus::SignalContext;
 
-use log::*;
+use log::error;
 
-use crate::dbus::PlayerInterface;
 use crate::ui::State as Route;
 
 #[derive(Copy, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -18,11 +16,11 @@ pub enum Repeat {
 impl Display for Repeat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let text = match &self {
-            Repeat::Off => "no",
-            Repeat::Song => "song",
-            Repeat::Playlist => "playlist",
+            Self::Off => "no",
+            Self::Song => "song",
+            Self::Playlist => "playlist",
         };
-        write!(f, "{}", text)
+        write!(f, "{text}")
     }
 }
 
@@ -35,11 +33,11 @@ pub enum PlaybackStatus {
 impl Display for PlaybackStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let text = match &self {
-            PlaybackStatus::Stopped => "Stopped",
-            PlaybackStatus::Paused => "Paused",
-            PlaybackStatus::Playing => "Playing",
+            Self::Stopped => "Stopped",
+            Self::Paused => "Paused",
+            Self::Playing => "Playing",
         };
-        write!(f, "{}", text)
+        write!(f, "{text}")
     }
 }
 
@@ -56,8 +54,8 @@ pub struct State {
     pub duration: i64, // in secs
     pub time_pos: i64, // in secs
     pub volume: i64,
-    pub title: Arc<str>,
-    pub path: Arc<str>,
+    pub title: String,
+    pub path: String,
     pub repeat: Repeat,
     pub playpause: PlaybackStatus,
     pub shuffled: bool,
@@ -68,12 +66,13 @@ impl Player {
         let player = Mpv::new().unwrap();
         player.set_property("video", false).unwrap();
         player.set_property("ytdl", true).unwrap();
-        Player {
+        player.set_property("term-playing-msg", "Title: ${media-title}").unwrap();
+        Self {
             player,
             shuffled: false,
             in_playlist: false,
             stopped: true,
-            route: Default::default(),
+            route: Route::default(),
             repeat: Repeat::Off,
         }
     }
@@ -90,8 +89,8 @@ impl Player {
             duration,
             time_pos,
             volume,
-            title: Arc::from(title),
-            path: Arc::from(path),
+            title,
+            path,
             repeat: self.repeat,
             playpause: playback_status,
             shuffled,
@@ -112,7 +111,7 @@ impl Player {
         self.player.get_property("pause").unwrap_or(true)
     }
 
-    pub async fn playpause(&mut self) {
+    pub fn playpause(&self) {
         if self.paused() {
             let _ = self.player.unpause();
         } else {
@@ -122,7 +121,7 @@ impl Player {
 
     pub fn play(&mut self, url: &str, route: Route) {
         // It is necessary to surround the url with quotes to avoid errors
-        match self.player.command("loadfile", &[&format!("\"{}\"", url)]) {
+        match self.player.command("loadfile", &[&format!("\"{url}\"")]) {
             Ok(_) => self.stopped = false,
             Err(e) => error!("error loading file {:?}", e),
         };
@@ -133,11 +132,11 @@ impl Player {
         self.player.get_property("volume").unwrap_or(100)
     }
 
-    pub fn get_repeat(&self) -> Repeat {
+    pub const fn get_repeat(&self) -> Repeat {
         self.repeat
     }
 
-    pub fn incr_volume(&mut self, dv: i64) {
+    pub fn incr_volume(&self, dv: i64) {
         let volume = self.get_volume();
         let volume = std::cmp::min(volume + dv, 100);
         let volume = std::cmp::max(volume, 0);
@@ -160,13 +159,13 @@ impl Player {
         self.shuffled = !self.shuffled;
     }
 
-    pub async fn set_auto(&mut self, playlist: &[&str], route: Route) {
-        self.stop().await;
+    pub fn set_auto(&mut self, playlist: &[&str], route: Route) {
+        self.stop();
         self.player.playlist_clear().unwrap_or(()); // silently ignore failure
         if !self.in_playlist {
             let files: Vec<(&str, FileState, Option<_>)> = playlist
                 .iter()
-                .cloned()
+                .copied()
                 .map(|s| (s, FileState::AppendPlay, None))
                 .collect();
             self.player.playlist_load_files(&files).unwrap_or(()); // silently ignore failure
@@ -174,7 +173,7 @@ impl Player {
         }
         self.in_playlist = !self.in_playlist;
         self.shuffled = false;
-        self.route = route
+        self.route = route;
     }
 
     pub fn next(&self) {
@@ -189,35 +188,35 @@ impl Player {
             .unwrap_or_else(|_| error!("Failed to go previous"));
     }
 
-    pub fn is_shuffled(&self) -> bool {
+    pub const fn is_shuffled(&self) -> bool {
         self.shuffled
     }
 
-    pub fn is_in_playlist(&self) -> bool {
+    pub const fn is_in_playlist(&self) -> bool {
         self.in_playlist
     }
 
-    pub async fn stop(&mut self) {
+    pub fn stop(&mut self) {
         self.player
             .command("stop", &[])
             .unwrap_or_else(|_| error!("Failed to stop"));
         self.stopped = true;
     }
 
-    pub fn is_stopped(&self) -> bool {
+    pub const fn is_stopped(&self) -> bool {
         self.stopped
     }
 
-    pub fn seek_relative(&mut self, dt: i64) {
-        self.player.seek_forward(dt as f64).unwrap_or(()); // silent failure
+    pub fn seek_relative(&self, dt: i32) {
+        self.player.seek_forward(f64::from(dt)).unwrap_or(()); // silent failure
     }
 
-    pub fn seek_percent(&mut self, percent: usize) {
+    pub fn seek_percent(&self, percent: usize) {
         // seek_percent_absolute is the same as seek_percent
         // because of a typo in the lib
         // self.player.seek_percent_absolute(pct).unwrap();
         self.player
-            .command("seek", &[&format!("{}", percent), "absolute-percent"])
+            .command("seek", &[&format!("{percent}"), "absolute-percent"])
             .unwrap_or(());
     }
 
@@ -225,16 +224,16 @@ impl Player {
         match self.repeat {
             Repeat::Off => {
                 self.repeat = Repeat::Song;
-                self.player.set_property("loop-file", "inf");
+                let _ = self.player.set_property("loop-file", "inf");
             }
             Repeat::Song => {
                 self.repeat = Repeat::Playlist;
-                self.player.set_property("loop-file", "no");
-                self.player.set_property("loop-playlist", "inf");
+                let _ = self.player.set_property("loop-file", "no");
+                let _ = self.player.set_property("loop-playlist", "inf");
             }
             Repeat::Playlist => {
                 self.repeat = Repeat::Off;
-                self.player.set_property("loop-playlist", "no");
+                let _ = self.player.set_property("loop-playlist", "no");
             }
         }
     }

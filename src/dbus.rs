@@ -1,51 +1,49 @@
 use std::collections::HashMap;
-use std::{future::pending, sync::Arc};
+use std::sync::Arc;
 
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
-use zbus::{dbus_interface, Connection, ConnectionBuilder};
+use zbus::{dbus_interface, ConnectionBuilder};
 
-//use crate::ui::Ui;
-//use crate::event::Event;
 use crate::ui::Ui;
-use log::*;
+use log::debug;
 
 struct BaseInterface {}
 
 #[dbus_interface(name = "org.mpris.MediaPlayer2")]
 impl BaseInterface {
     fn identity(&self) -> String {
-        "yauma".to_string()
+        "yama".to_string()
     }
 
     #[dbus_interface(property)]
-    fn can_raise(&self) -> bool {
+    const fn can_raise(&self) -> bool {
         false
     }
 
-    fn raise(&self) {}
+    const fn raise(&self) {}
 
-    fn quit(&self) {}
+    const fn quit(&self) {}
 
     #[dbus_interface(property)]
-    fn can_quit(&self) -> bool {
+    const fn can_quit(&self) -> bool {
         false
     }
 
     #[dbus_interface(property)]
-    fn has_track_list(&self) -> bool {
+    const fn has_track_list(&self) -> bool {
         false
     }
 
     #[dbus_interface(property)]
     fn supported_uri_schemes(&self) -> Vec<String> {
-        Default::default()
+        Vec::default()
     }
 
     #[dbus_interface(property)]
     fn supported_mime_types(&self) -> Vec<String> {
-        Default::default()
+        Vec::default()
     }
 }
 #[derive(Clone)]
@@ -56,25 +54,25 @@ pub struct PlayerInterface {
 #[dbus_interface(name = "org.mpris.MediaPlayer2.Player")]
 impl PlayerInterface {
     async fn next(&self) {
-        self.ui.lock().await.next().await;
+        self.ui.lock().await.next();
     }
     async fn previous(&self) {
-        self.ui.lock().await.prev().await;
+        self.ui.lock().await.prev();
     }
     async fn pause(&self) {
-        self.ui.lock().await.set_pause_val(true).await;
+        self.ui.lock().await.set_pause_val(true);
     }
     async fn unpause(&self) {
-        self.ui.lock().await.set_pause_val(false).await;
+        self.ui.lock().await.set_pause_val(false);
     }
     async fn play_pause(&self) {
-        self.ui.lock().await.player.playpause().await;
+        self.ui.lock().await.player.playpause();
     }
     async fn play(&self) {
         self.unpause().await;
     }
     async fn stop(&self) {
-        self.ui.lock().await.player.stop().await;
+        self.ui.lock().await.player.stop();
     }
     const fn seek(&self) {}
     const fn set_position(&self) {}
@@ -88,8 +86,7 @@ impl PlayerInterface {
 
     #[dbus_interface(property)]
     async fn loop_status(&self) -> String {
-        let ui = self.ui.lock().await;
-        let state = ui.player.get_state();
+        let state = self.ui.lock().await.player.get_state();
         format!("{}", state.repeat)
     }
 
@@ -99,33 +96,32 @@ impl PlayerInterface {
     }
     #[dbus_interface(property)]
     async fn shuffle(&self) -> bool {
-        let ui = self.ui.lock().await;
-        let state = ui.player.get_state();
+        let state = self.ui.lock().await.player.get_state();
         state.shuffled
     }
     #[dbus_interface(property)]
     async fn volume(&self) -> f32 {
-        let ui = self.ui.lock().await;
-        let state = ui.player.get_state();
+        let state = self.ui.lock().await.player.get_state();
         (state.volume as f32) / 100.
     }
     #[dbus_interface(property)]
     async fn position(&self) -> u64 {
-        let ui = self.ui.lock().await;
-        let state = ui.player.get_state();
+        let state = self.ui.lock().await.player.get_state();
         (state.time_pos * 1_000_000) as u64
     }
     #[dbus_interface(property)]
     async fn metadata(&self) -> HashMap<&str, zbus::zvariant::Value> {
         use zbus::zvariant::Value;
         let mut res = HashMap::new();
-        let ui = self.ui.lock().await;
-        if let Some(song) = ui.get_playing_song_info() {
+        let song = self.ui.lock().await.get_playing_song_info();
             //res.insert("mpris:trackid", Value::Str(song.id.clone().into()));
-            res.insert("mpris:length", Value::U64(song.duration.as_micros() as u64));
-            res.insert("xesam:title", Value::Str(song.title.clone().into()));
-            res.insert("xesam:artist", Value::Str(song.artists.join(", ").into()));
-        }
+        res.insert(
+            "mpris:length",
+            Value::U64(u64::try_from(song.duration.as_micros()).unwrap_or_default()),
+        );
+        res.insert("xesam:title", Value::Str(song.title.clone().into()));
+        res.insert("xesam:artist", Value::Str(song.artists.join(", ").into()));
+        
         res
     }
 
@@ -155,9 +151,7 @@ impl PlayerInterface {
     }
 }
 
-pub async fn start(
-    ui: Arc<Mutex<Ui>>,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub async fn start(ui: Arc<Mutex<Ui>>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     debug!("Starting dbus");
     let base = BaseInterface {};
     let player = PlayerInterface { ui: ui.clone() };
@@ -177,7 +171,7 @@ pub async fn start(
         let player_iface = player_iface_ref.get_mut().await;
         let context = player_iface_ref.signal_context();
         let new_state = ui.lock().await.player.get_state();
-        if state.path != new_state.path {
+        if state.path != new_state.path || state.title != new_state.title {
             player_iface.metadata_changed(context).await?;
         }
         if state.repeat != new_state.repeat {
@@ -192,6 +186,7 @@ pub async fn start(
         if state.playpause != new_state.playpause {
             player_iface.playback_status_changed(context).await?;
         }
+        drop(player_iface);
         state = new_state;
     }
 }

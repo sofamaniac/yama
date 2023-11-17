@@ -11,7 +11,7 @@ use google_youtube3::{
     hyper_rustls::{self, HttpsConnector},
     oauth2, YouTube,
 };
-use log::*;
+use log::{debug, error};
 use tokio::sync::Mutex;
 
 const MAX_RESULT: u32 = 50;
@@ -55,10 +55,10 @@ impl YtPlaylist {
         let result = request.doit().await.unwrap_or_default();
         let (_, result) = result;
         let items = result.items.unwrap_or_default();
-        let songs: Vec<YtSong> = items.into_iter().flat_map(song_from_item).collect();
+        let songs: Vec<YtSong> = items.into_iter().filter_map(song_from_item).collect();
         for s in songs {
             self.entries.push(s);
-        };
+        }
         self.next_page = result.next_page_token;
     }
     const fn is_loaded(&self) -> bool {
@@ -111,12 +111,18 @@ impl PlaylistTrait for YtPlaylist {
         Ok(self.get_entries())
     }
 
-    fn download_song(&self, index: usize) -> Result<()> {
+    fn download_song(&self, _index: usize) -> Result<()> {
         todo!()
     }
 
     fn get_url_song(&self, index: usize) -> Result<String> {
-        todo!()
+        let id = self.entries[index].id.clone();
+        Ok(format!("https://youtu.be/{id}"))
+    }
+    fn get_all_url(&self) -> Result<Vec<String>> {
+        Ok((0..self.entries.len())
+            .map(|i| self.get_url_song(i).unwrap())
+            .collect())
     }
 }
 
@@ -173,7 +179,6 @@ impl Client {
     }
 }
 
-
 #[async_trait]
 impl ClientTrait for Client {
     async fn connect(&mut self) -> Result<()> {
@@ -218,7 +223,7 @@ impl ClientTrait for Client {
             ),
             auth,
         );
-        // Force flow to start
+        // Force flow to start with dummy request
         let _ = hub.videos().list(&vec!["gubergren".into()]).doit().await;
         self.hub = Some(Arc::new(Mutex::new(hub)));
         Ok(())
@@ -228,7 +233,9 @@ impl ClientTrait for Client {
         if !self.all_loaded {
             self.fetch_all_playlists().await;
             futures::stream::iter(self.playlists.lock().await.iter_mut())
-                .for_each_concurrent(10, |p| async { let _ = p.load().await; })
+                .for_each_concurrent(10, |p| async {
+                    let _ = p.load().await;
+                })
                 .await;
             self.all_loaded = true;
         }
@@ -260,7 +267,10 @@ fn convert_playlist_list(
     hub: &Option<Arc<Mutex<YouTube<HttpsConnector<HttpConnector>>>>>,
 ) -> Vec<YtPlaylist> {
     let items = result.items.unwrap_or_default();
-    items.into_iter().map(|p| convert_playlist(p, hub.clone())).collect()
+    items
+        .into_iter()
+        .map(|p| convert_playlist(p, hub.clone()))
+        .collect()
 }
 fn convert_playlist(
     playlist: api::Playlist,
@@ -288,7 +298,10 @@ fn song_from_item(item: api::PlaylistItem) -> Option<YtSong> {
         .unwrap_or_default()
         .video_id
         .unwrap_or_default();
-    let artists = details.video_owner_channel_title.as_ref().map_or("", |artist| artist);
+    let artists = details
+        .video_owner_channel_title
+        .as_ref()
+        .map_or("", |artist| artist);
     if artists.is_empty() {
         None
     } else {
@@ -298,7 +311,7 @@ fn song_from_item(item: api::PlaylistItem) -> Option<YtSong> {
                 artists: vec![artists.into()],
                 duration: Duration::default(),
             },
-            id
+            id,
         })
     }
 }

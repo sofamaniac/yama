@@ -11,15 +11,17 @@ color-eyre = "0.6.2"
 confy = "0.5.1"
 crossterm = "0.27.0"
 enum_dispatch = "0.3.12"
-env_logger = "0.10.0"
 futures = "0.3.28"
 google-youtube3 = "5.0.3"
 libmpv = {git = "https://github.com/ParadoxSpiral/libmpv-rs.git", rev = "3e6c389"}
 log = "0.4.20"
+log4rs = "1.2.0"
+rand = "0.8.5"
 ratatui = "0.23.0"
 serde = { version = "1.0.188", features = ["serde_derive"] }
 strum = { version = "0.25.0", features = ["derive"] }
 strum_macros = "0.25.2"
 tokio = { version = "1.32.0", features = ["full"] }
+ytd-rs = { version = "0.1.7", features = ["yt-dlp"] }
 zbus = { version = "3.14.1", features = ["tokio"] }
 

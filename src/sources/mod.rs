@@ -1,6 +1,6 @@
+use async_trait::async_trait;
 use std::fmt::Display;
 use std::time::Duration;
-use async_trait::async_trait;
 
 use color_eyre::Result;
 use enum_dispatch::enum_dispatch;
@@ -22,7 +22,6 @@ pub struct Song {
 #[async_trait]
 #[enum_dispatch(Playlist)]
 pub trait PlaylistTrait: Send {
-
     fn get_title(&self) -> String;
     fn get_number_entries(&self) -> usize;
     fn get_entries(&self) -> Vec<Song>;
@@ -31,27 +30,24 @@ pub trait PlaylistTrait: Send {
     async fn load(&mut self) -> Result<Vec<Song>>;
     fn download_song(&self, index: usize) -> Result<()>;
     fn get_url_song(&self, index: usize) -> Result<String>;
+    fn get_all_url(&self) -> Result<Vec<String>>;
     fn is_loading(&self) -> bool;
-
 }
 
 #[enum_dispatch]
+#[derive(Clone)]
 pub enum Playlist {
-    YtPlaylist
+    YtPlaylist,
 }
 
 #[async_trait]
 #[enum_dispatch(Client)]
 pub trait ClientTrait {
-
     async fn connect(&mut self) -> Result<()>;
     async fn load_playlists(&mut self) -> Result<Vec<Playlist>>;
     async fn get_playlists(&self) -> Vec<Playlist>;
     fn is_connected(&self) -> bool;
-
 }
-
-
 
 #[enum_dispatch]
 pub enum Client {
@@ -59,12 +55,11 @@ pub enum Client {
     LocalClient,
 }
 
-
 impl Display for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Client::YtClient(_) => write!(f, "Youtube"),
-            Client::LocalClient(_) => write!(f, "Local files"),
+            Self::YtClient(_) => write!(f, "Youtube"),
+            Self::LocalClient(_) => write!(f, "Local files"),
         }
     }
 }

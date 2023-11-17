@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub struct Config {
@@ -10,7 +10,7 @@ impl std::default::Default for Config {
     fn default() -> Self {
         Self {
             secrets_location: String::new(),
-            yt_dlp_output_template: "%(title)s.%(ext)s".to_owned()
+            yt_dlp_output_template: "%(title)s.%(ext)s".to_owned(),
         }
     }
 }
