@@ -1,4 +1,4 @@
-use color_eyre::Result;
+use anyhow::Result;
 use log::LevelFilter;
 use log4rs::{
     append::file::FileAppender,
@@ -7,7 +7,7 @@ use log4rs::{
 };
 
 pub fn init() -> Result<()> {
-    let file_path = "/tmp/foo.log";
+    let file_path = "/tmp/yamav3.log";
 
     // Logging to log file.
     let logfile = FileAppender::builder()
