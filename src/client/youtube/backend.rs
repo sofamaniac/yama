@@ -18,7 +18,10 @@ use youtube3::api::{Playlist as YtPlaylist, PlaylistItemListResponse, Video};
 use youtube3::api::{PlaylistItem, PlaylistListResponse};
 use youtube3::{hyper, hyper_rustls, oauth2, YouTube};
 
-use crate::{client::interface::{Answer, GetRequest, PlaylistInfo, Request, SongInfo, Widget}, config};
+use crate::{
+    client::interface::{Answer, GetRequest, PlaylistInfo, Request, SongInfo, Widget},
+    config,
+};
 
 type Hub = YouTube<HttpsConnector<HttpConnector>>;
 const MAX_RESULT: u32 = 50;
@@ -304,11 +307,12 @@ impl Backend {
             .list(&vec!["snippet".to_string(), "contentDetails".to_string()])
             .add_id("LL")
             .max_results(MAX_RESULT);
-        let (_, result) = request.doit().await.unwrap();
-        let results = result.items.unwrap_or_default();
-        if !results.is_empty() {
-            let playlist = Playlist::new(results[0].clone(), Some(0));
-            self.playlists.insert(playlist.id.clone(), playlist);
+        if let Ok((_, result)) = request.doit().await {
+            let results = result.items.unwrap_or_default();
+            if !results.is_empty() {
+                let playlist = Playlist::new(results[0].clone(), Some(0));
+                self.playlists.insert(playlist.id.clone(), playlist);
+            }
         }
     }
     fn set_playlists(&mut self, playlists: PlaylistListResponse) {
@@ -444,7 +448,7 @@ impl Backend {
         Ok(YouTube::new(
             hyper::Client::builder().build(
                 hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
+                    .with_native_roots()?
                     .https_or_http()
                     .enable_http1()
                     .enable_http2()

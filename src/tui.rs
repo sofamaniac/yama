@@ -267,7 +267,7 @@ impl Tui {
         let widget = self.widgets.pop().unwrap();
         match widget {
             Widget::Widget(widget) => match widget {
-                crate::client::interface::Widget::Alert { .. } => todo!(),
+                crate::client::interface::Widget::Alert { .. } => (),
                 crate::client::interface::Widget::Checkboxes { .. } => todo!(),
                 crate::client::interface::Widget::Radioboxes { .. } => todo!(),
                 crate::client::interface::Widget::PromptBox {
@@ -449,12 +449,18 @@ fn render_sources_widget(f: &mut Frame, layout: Rect, state: &State) {
     f.render_stateful_widget(widget, layout, &mut tui_state)
 }
 fn render_playlist_widget(f: &mut Frame<'_>, layout: Rect, state: &State) {
-    //let playlists = &state.playlists.get_strings();
     let playlists: &Vec<String> = &state
         .playlists
         .entries
         .iter()
-        .map(|p| format!("{} ({}/{})", p.title.clone(), p.songs.len(), p.length))
+        .map(|p| {
+            let loading = if p.length != p.songs.len() {
+                " ⟳"
+            } else {
+                ""
+            };
+            format!("{}{}", p.title.clone(), loading)
+        })
         .collect();
     let mut tui_state = ListState::default();
     tui_state.select(state.playlists.select);

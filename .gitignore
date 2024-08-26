@@ -1,2 +1,6 @@
 /target
+result*
 tags
+.envrc
+*.nix
+.direnv

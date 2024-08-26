@@ -162,7 +162,8 @@ impl Default for Config {
         let mut spotify_secrets_loc: PathBuf = PathBuf::from(dirs.config_dir());
         spotify_secrets_loc.push("spotify_secrets.json");
         let user_dirs = UserDirs::new().unwrap();
-        let audio_dir = user_dirs.audio_dir().unwrap();
+        let default_audio_dir = PathBuf::from("");
+        let audio_dir = user_dirs.audio_dir().unwrap_or(&default_audio_dir);
         Self {
             keymap,
             yt_secret_location: format!("{}", yt_secrets_loc.display()),
