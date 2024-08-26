@@ -21,6 +21,7 @@
 [workspace]
 members = [
 	"protocol",
+	"protocol/protocol_derive",
 	"tui",
 	"youtube",
 ]

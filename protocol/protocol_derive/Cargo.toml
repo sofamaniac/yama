@@ -1,0 +1,14 @@
+[package]
+name = "protocol_derive"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+attribute-derive = "0.10.0"
+convert_case = "0.6.0"
+darling = "0.20.10"
+quote = "1.0.37"
+syn = "2.0.76"
