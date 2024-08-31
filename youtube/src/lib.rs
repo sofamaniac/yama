@@ -1,128 +1,194 @@
-use std::collections::HashMap;
+mod player;
+mod youtube;
+use std::{collections::HashMap, sync::Arc};
 
-use google_youtube3::{
-    api::{Playlist, PlaylistItemListResponse, PlaylistListResponse},
-    hyper, hyper_rustls,
-    oauth2::{self, authenticator_delegate::InstalledFlowDelegate},
-    YouTube,
+use player::Player;
+use protocol::{playlist::PlaylistId, Action, DataType, UICommand};
+
+use tokio::{
+    sync::{mpsc, RwLock},
+    task::JoinSet,
 };
+use tokio_util::sync::CancellationToken;
+use youtube::{get_all_playlists, get_playlist, Source, YtPlaylist};
 
-use protocol::{playlist::PlaylistId, Action, UICommand};
-use tokio::sync::mpsc::Sender;
-
-type Result<T> = protocol::Result<T>;
-
-#[derive(Debug)]
-struct YtPlaylist(protocol::playlist::Playlist);
-pub struct Source {
-    hub: YouTube<HubType>,
-    ui_channel: Sender<Action>,
-    playlists: Vec<YtPlaylist>,
-}
-struct Authenticator {
-    out_channel: Sender<Action>,
+pub struct Handler {
+    youtube: Source,
+    playlists: Arc<RwLock<HashMap<PlaylistId, YtPlaylist>>>,
+    loading_playlists: bool,
+    out_channel: mpsc::Sender<Action>,
+    in_channel: mpsc::Receiver<Action>,
+    should_quit: CancellationToken,
+    tasks: JoinSet<()>,
+    player: Player,
 }
 
-// type HubType = hyper::Client<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>>;
-type HubType = hyper_rustls::HttpsConnector<hyper::client::HttpConnector>;
-
-impl Source {
-    pub async fn new(ui_channel: Sender<Action>) -> Self {
-        let secret =
-            oauth2::read_application_secret("/home/sofamaniac/.config/yamav3/yt_secrets.json")
-                .await
-                .expect("Could not read secrets");
-        let auth = oauth2::InstalledFlowAuthenticator::builder(
-            secret,
-            oauth2::InstalledFlowReturnMethod::HTTPRedirect,
-        )
-        .flow_delegate(Box::new(Authenticator {
-            out_channel: ui_channel.clone(),
-        }))
-        .build()
-        .await
-        .unwrap();
-        let hub = YouTube::new(
-            hyper::Client::builder().build(
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .unwrap()
-                    .https_or_http()
-                    .enable_http1()
-                    .build(),
-            ),
-            auth,
-        );
+impl Handler {
+    pub async fn new(
+        in_channel: mpsc::Receiver<Action>,
+        out_channel: mpsc::Sender<Action>,
+        cancel_token: CancellationToken,
+    ) -> Self {
+        let youtube = Source::new(out_channel.clone()).await;
         Self {
-            hub,
-            ui_channel,
-            playlists: Vec::new(),
+            youtube,
+            playlists: Arc::new(RwLock::new(HashMap::new())),
+            loading_playlists: false,
+            out_channel,
+            in_channel,
+            tasks: JoinSet::new(),
+            should_quit: cancel_token,
+            player: Player::new(),
         }
     }
-    pub async fn get_all_playlists(&mut self) {
-        let (_, playlists) = self
-            .hub
-            .playlists()
-            .list(&vec![String::from("snippet")])
-            .mine(true)
-            .doit()
-            .await
-            .unwrap();
-        let items = playlists.items.unwrap_or_default();
-        self.playlists = items.into_iter().map(Into::into).collect();
-        let (cmd, _) = UICommand::inform_user(format!("{:#?}", self.playlists));
-        self.ui_channel.send(cmd).await;
+    pub async fn run(mut self) {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                _ = self.should_quit.cancelled() => break,
+                Some(action) = self.in_channel.recv() => {
+                    self.handle_action(action).await
+                }
+                _ = self.tasks.join_next() => {}
+                _ = interval.tick() => { self.player.update() }
+            }
+        }
     }
-}
-
-impl From<Playlist> for YtPlaylist {
-    fn from(value: Playlist) -> Self {
-        let snippet = value.snippet.unwrap();
-        Self(protocol::playlist::Playlist::new(
-            PlaylistId::new(value.id.unwrap()),
-            snippet.title.unwrap(),
-        ))
-    }
-}
-
-impl InstalledFlowDelegate for Authenticator {
-    fn present_user_url<'a>(
-        &'a self,
-        url: &'a str,
-        need_code: bool,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::result::Result<String, String>> + Send + 'a>,
-    > {
-        Box::pin(self.make_url(url, need_code))
-    }
-}
-
-impl Authenticator {
-    async fn make_url<'a>(
-        &'a self,
-        url: &'a str,
-        need_code: bool,
-    ) -> std::result::Result<String, String> {
-        // First we try to open the url in a browser
-        let (cmd, back_channel) = UICommand::open_url(url.to_string());
-        self.out_channel.send(cmd).await;
-        if back_channel.await.is_ok() {
-            return Ok(String::new());
+    async fn handle_action(&mut self, action: Action) {
+        // TODO await result with timeout
+        let Action { command, response } = action;
+        let res: DataType = match command {
+            protocol::Command::Refresh => todo!(),
+            protocol::Command::Restart => todo!(),
+            protocol::Command::Quit => {
+                self.should_quit.cancel();
+                ().into()
+            }
+            protocol::Command::Playlist(command) => {
+                let res = self.handle_playlist_command(command).await;
+                // Close open notification after successfull interacton with youtube api
+                if let Ok(res) = res {
+                    let mut youtube_notif_id = self.youtube.connection_notification_id.lock().await;
+                    if let Some(notif_id) = *youtube_notif_id {
+                        let action = UICommand::close_notification(notif_id);
+                        // We ignore the result
+                        let _ = action.send(&self.out_channel).await;
+                        *youtube_notif_id = None;
+                    }
+                    res
+                } else {
+                    ().into()
+                }
+            }
+            protocol::Command::Playback(command) => self.handle_player_command(command).await,
+            protocol::Command::UI(_) => todo!(),
         };
-        // Ask the user to open the url in a browser
-        let message = format!("Please go to {url} and follow the instructions");
-        let (cmd, back_channel) = UICommand::inform_user(message);
-        self.out_channel.send(cmd).await;
-        if back_channel.await.is_ok() {
-            return Ok(String::new());
+        response.send(Ok(res));
+    }
+
+    pub async fn handle_playlist_command(
+        &mut self,
+        command: protocol::playlist::Command,
+    ) -> protocol::Result<DataType> {
+        match command {
+            protocol::playlist::Command::ListAll => {
+                let playlists = self.playlists.read().await;
+                if !playlists.is_empty() {
+                    self.loading_playlists = false;
+                    let list: Vec<protocol::playlist::Playlist> = playlists
+                        .values()
+                        .map(|fp| fp.playlist.playlist().to_owned())
+                        .collect();
+                    let list: Arc<[protocol::Playlist]> = list.into();
+                    Ok(list.into())
+                } else {
+                    drop(playlists);
+                    if !self.loading_playlists {
+                        self.loading_playlists = true;
+                        let handler_playlists = self.playlists.clone();
+                        let hub = self.youtube.hub.clone();
+                        self.tasks.spawn(async move {
+                            let playlists = get_all_playlists(&hub).await;
+                            let mut handler_playlists = handler_playlists.write().await;
+                            for playlist in playlists {
+                                handler_playlists.insert(playlist.id().clone(), playlist);
+                            }
+                        });
+                    }
+                    Err(protocol::Error::Loading)
+                }
+            }
+            protocol::playlist::Command::Get(playlist) => {
+                let mut lock = self.playlists.write().await;
+                if let Some(yt_playlist) = lock.get_mut(&playlist.id()) {
+                    if yt_playlist.fully_loaded {
+                        return Ok(Arc::new(yt_playlist.playlist.clone()).into());
+                    } else if !yt_playlist.loading {
+                        yt_playlist.loading = true;
+                        drop(lock);
+                        let handler_playlists = self.playlists.clone();
+                        let hub = self.youtube.hub.clone();
+                        self.tasks.spawn(async move {
+                            // TODO refactor
+                            let lock = handler_playlists.read().await;
+                            if let Some(old_playlist) = lock.get(&playlist.id()) {
+                                let playlist = old_playlist.playlist.playlist().clone();
+                                drop(lock);
+                                if let Some(playlist) = get_playlist(hub, playlist).await {
+                                    let mut handler_playlists = handler_playlists.write().await;
+                                    let playlist_mut =
+                                        handler_playlists.get_mut(&playlist.id()).unwrap();
+                                    playlist_mut.playlist = playlist;
+                                    playlist_mut.loading = false;
+                                    playlist_mut.fully_loaded = true;
+                                }
+                            }
+                        });
+                        return Err(protocol::Error::Loading);
+                    } else {
+                        return Err(protocol::Error::Loading);
+                    }
+                } else {
+                    return Err(protocol::Error::Loading);
+                }
+            }
+            protocol::playlist::Command::Add(_, _) => todo!(),
+            protocol::playlist::Command::Remove(_, _) => todo!(),
+            protocol::playlist::Command::Delete(_) => todo!(),
+            protocol::playlist::Command::Create(_) => todo!(),
         }
-        if need_code {
-            let message = format!("Please open {url} and copy back the code");
-            let (cmd, back_channel) = UICommand::prompt_user(message);
-            self.out_channel.send(cmd).await;
-            // TODO: Handle code
-            return Ok(String::new());
+    }
+
+    async fn handle_player_command(&mut self, command: protocol::playback::Command) -> DataType {
+        match command {
+            protocol::playback::Command::SetVolume(_) => todo!(),
+            protocol::playback::Command::GetVolume => todo!(),
+            protocol::playback::Command::SetShuffle(_) => todo!(),
+            protocol::playback::Command::GetShuffle => todo!(),
+            protocol::playback::Command::SetAutoplay(autoplay) => {
+                self.player.set_autoplay(autoplay).into()
+            }
+            protocol::playback::Command::GetAutoplay => todo!(),
+            protocol::playback::Command::SetRepeat(_) => todo!(),
+            protocol::playback::Command::GetRepeat => todo!(),
+            protocol::playback::Command::Play(_) => todo!(),
+            protocol::playback::Command::Pause => todo!(),
+            protocol::playback::Command::Stop => todo!(),
+            protocol::playback::Command::Seek(_, _) => todo!(),
+            protocol::playback::Command::NextSong => self.player.next().into(),
+            protocol::playback::Command::PreviousSong => self.player.previous().into(),
+            protocol::playback::Command::AddToQueue(queue) => match queue {
+                protocol::Queue::Songs(songs) => self.player.set_playlist(songs).into(),
+                protocol::Queue::Playlist(playlist) => {
+                    let songs = get_playlist(self.youtube.hub.clone(), playlist)
+                        .await
+                        .map(|fp| fp.songs().clone())
+                        .unwrap_or_default();
+                    self.player.set_playlist(songs).into()
+                }
+            },
+            protocol::playback::Command::GetQueue => todo!(),
+            protocol::playback::Command::GetInfo => todo!(),
         }
-        Ok(String::new())
     }
 }

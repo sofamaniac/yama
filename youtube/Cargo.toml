@@ -7,3 +7,6 @@ edition = "2021"
 google-youtube3 = "5.0.5"
 tokio = { version = "1.39.3", features = ["sync"] }
 protocol = { path = "../protocol" }
+tokio-util = "0.7.11"
+libmpv = { path = "../../libmpv-rs" }
+rand = "0.8.5"

@@ -1,18 +1,17 @@
 use std::time::Duration;
 
-use crate::playlist::{PlaylistId, Song, SongId};
+use crate::{
+    playlist::{PlaylistId, Song, SongId},
+    to_from_datatype, Playlist,
+};
 
-use super::{Action, Command as Cmd, DataType, Result};
+use super::{Command as Cmd, DataType, Result, TypedAction, TypedResult};
 use protocol_derive::Protocol;
 use tokio::sync::oneshot::{Receiver, Sender};
 
 #[derive(Debug)]
 pub struct Volume(u8);
-impl From<Volume> for DataType {
-    fn from(value: Volume) -> Self {
-        Self::Volume(value)
-    }
-}
+to_from_datatype!(Volume);
 #[derive(Debug)]
 pub struct VolumeDelta(i8);
 #[derive(Debug)]
@@ -34,22 +33,14 @@ pub struct PlayerInfo {
     repeat: Repeat,
     volume: Volume,
 }
-impl From<PlayerInfo> for DataType {
-    fn from(value: PlayerInfo) -> Self {
-        Self::PlayerInfo(value)
-    }
-}
-#[derive(Debug)]
+to_from_datatype!(PlayerInfo);
+#[derive(Debug, PartialEq, Eq)]
 pub enum Repeat {
     Off,
     Song,
     Playlist,
 }
-impl From<Repeat> for DataType {
-    fn from(value: Repeat) -> Self {
-        Self::Repeat(value)
-    }
-}
+to_from_datatype!(Repeat);
 #[derive(Debug)]
 pub enum PlayerStatus {
     Stopped,
@@ -57,53 +48,44 @@ pub enum PlayerStatus {
 }
 #[derive(Debug)]
 pub enum Queue {
-    Songs(Vec<SongId>),
-    Playlist(PlaylistId),
+    Songs(Vec<Song>),
+    Playlist(Playlist),
 }
-impl From<Queue> for DataType {
-    fn from(value: Queue) -> Self {
-        Self::Queue(value)
-    }
-}
-impl From<bool> for DataType {
-    fn from(value: bool) -> Self {
-        Self::Bool(value)
-    }
-}
+to_from_datatype!(Queue);
 
 #[derive(Debug, Protocol)]
 pub enum Command {
-    #[protocol(output = Result<Volume>, args_name = [volume])]
+    #[protocol(output = Volume, args_name = [volume])]
     SetVolume(VolumeSetter),
-    #[protocol(output = Result<Volume>)]
+    #[protocol(output = Volume)]
     GetVolume,
-    #[protocol(output = Result<bool>, args_name = [shuffle])]
+    #[protocol(output = bool, args_name = [shuffle])]
     SetShuffle(bool),
-    #[protocol(output = Result<bool>)]
+    #[protocol(output = bool)]
     GetShuffle,
-    #[protocol(output = Result<bool>, args_name = [autoplay])]
+    #[protocol(output = bool, args_name = [autoplay])]
     SetAutoplay(bool),
-    #[protocol(output = Result<bool>)]
+    #[protocol(output = bool)]
     GetAutoplay,
-    #[protocol(output = Result<Repeat>, args_name = [repeat])]
+    #[protocol(output = Repeat, args_name = [repeat])]
     SetRepeat(Repeat),
-    #[protocol(output = Result<Repeat>)]
+    #[protocol(output = Repeat)]
     GetRepeat,
-    #[protocol(output = Result<()>, args_name = [song_id])]
-    Play(SongId),
-    #[protocol(output = Result<()>)]
+    #[protocol(output = (), args_name = [song_id])]
+    Play(Song),
+    #[protocol(output = ())]
     Pause,
-    #[protocol(output = Result<()>)]
+    #[protocol(output = ())]
     Stop,
-    #[protocol(output = Result<()>, args_name = [seek_mode, duration])]
+    #[protocol(output = (), args_name = [seek_mode, duration])]
     Seek(SeekMode, Duration),
-    #[protocol(output = Result<()>)]
+    #[protocol(output = ())]
     NextSong,
-    #[protocol(output = Result<()>)]
+    #[protocol(output = ())]
     PreviousSong,
-    #[protocol(output = Result<()>, args_name = [queue])]
+    #[protocol(output = (), args_name = [queue])]
     AddToQueue(Queue),
-    #[protocol(output = Result<Queue>)]
+    #[protocol(output = Queue)]
     GetQueue,
     #[protocol(output = PlayerInfo)]
     GetInfo,

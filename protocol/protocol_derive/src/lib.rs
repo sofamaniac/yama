@@ -1,5 +1,5 @@
 use attribute_derive::FromAttr;
-use convert_case::{Case, Casing};
+use heck::AsSnakeCase;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, ToTokens};
 use syn::{parse_macro_input, DeriveInput, Meta};
@@ -17,11 +17,12 @@ pub fn protocol_derive(input: TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     if let syn::Data::Enum(data) = &input.data {
         let ty = &input.ident;
+        let (impl_gen, ty_gen, where_clause) = &input.generics.split_for_impl();
         let arms = data.variants.iter().map(|variant| {
             let ident = &variant.ident;
             let attr: Protocol =
                 Protocol::from_attributes(&variant.attrs).expect("Could not parse attr");
-            let name: syn::Ident = format_ident!("{}", &ident.to_string().to_case(Case::Snake));
+            let name: syn::Ident = format_ident!("{}", format!("{}", AsSnakeCase(ident.to_string())));
             let output = attr.output;
             let args_name = &attr.args_name;
             if args_name.len() != variant.fields.len() {
@@ -34,26 +35,18 @@ pub fn protocol_derive(input: TokenStream) -> proc_macro::TokenStream {
                 .collect();
             let mut out_tokens = output.to_token_stream().to_string();
             out_tokens.retain(|c| c != ' ');
-            let doc = format!("Reponse type is `{out_tokens}`");
-            if args.is_empty() {
+            let doc = format!("Reponse type is `Result<{out_tokens}>`");
+            let variant_args = if args.is_empty() { quote! {} } else { quote! {(#(#args_name),*)}};
                 quote! {
                     #[doc = #doc]
-                    pub fn #name() -> (Action, Receiver<DataType>) {
-                        Action::new(#ty::#ident)
+                    pub fn #name(#(#args),*) -> TypedAction<Result<#output>> {
+                        TypedAction::from_command(#ty::#ident #variant_args)
                     }
 
                 }
-            } else {
-                quote! {
-                    #[doc = #doc]
-                    pub fn #name(#(#args),*) -> (Action, Receiver<DataType>) {
-                        Action::new(#ty::#ident(#(#args_name),*))
-                    }
-                }
-            }
         });
         quote! {
-            impl #ty {
+            impl #impl_gen #ty #ty_gen #where_clause {
                 #(#arms)*
             }
         }

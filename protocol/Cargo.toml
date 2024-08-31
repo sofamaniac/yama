@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1.39.3", features = ["sync"] }
 protocol_derive = { path = "./protocol_derive" }
+thiserror = "1.0.63"
+uuid = { version = "1.10.0", features = ["v4", "fast-rng"] }
+log = "0.4.22"
