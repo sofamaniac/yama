@@ -1,9 +1,10 @@
 use crate::to_from_datatype;
 
+use super::Duration;
 use super::{Command as Cmd, DataType, Result, TypedAction, TypedResult};
 use core::fmt;
 use protocol_derive::Protocol;
-use std::{collections::HashMap, fmt::Display, sync::Arc, time::Duration};
+use std::{fmt::Display, sync::Arc};
 #[derive(Debug, Protocol)]
 pub enum Command {
     #[protocol(output = Arc<[Playlist]>)]
@@ -29,9 +30,11 @@ impl From<Command> for Cmd {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PlaylistId(String);
 impl PlaylistId {
-    // TODO: change visibility
     pub fn new(id: String) -> Self {
         Self(id)
+    }
+    pub fn to_str(&self) -> &str {
+        &self.0
     }
 }
 impl fmt::Display for PlaylistId {
@@ -62,19 +65,24 @@ pub struct Song {
     url: String,
 }
 impl Song {
-    pub fn new(id: SongId, url: String, title: String) -> Self {
+    pub fn new(
+        id: SongId,
+        url: String,
+        title: String,
+        duration: Duration,
+        artists: Vec<String>,
+    ) -> Self {
         Self {
             title,
             id,
             url,
+            duration,
+            artists,
             ..Default::default()
         }
     }
     pub fn id(&self) -> &SongId {
         &self.id
-    }
-    pub fn add_artist(&mut self, artist: String) {
-        self.artists.push(artist)
     }
     pub fn title(&self) -> &str {
         &self.title
@@ -85,8 +93,15 @@ impl Song {
     pub fn url(&self) -> &str {
         &self.url
     }
+    pub fn duration(&self) -> Duration {
+        self.duration
+    }
+
+    pub fn artists(&self) -> &[String] {
+        &self.artists
+    }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Playlist {
     id: PlaylistId,
     name: String,
@@ -95,7 +110,7 @@ pub struct Playlist {
 #[derive(Debug, Clone)]
 pub struct FullPlaylist {
     playlist: Playlist,
-    songs: Vec<Song>,
+    songs: Arc<[Song]>,
 }
 
 impl Playlist {
@@ -106,10 +121,13 @@ impl Playlist {
             cover_url: None,
         }
     }
-    pub fn set_cover_url(&mut self, cover_url: String) {
-        self.cover_url = Some(cover_url)
+    pub fn with_cover_url(self, cover_url: String) -> Self {
+        Self {
+            cover_url: Some(cover_url),
+            ..self
+        }
     }
-    pub fn name(&self) -> &String {
+    pub fn name(&self) -> &str {
         &self.name
     }
     pub fn id(&self) -> &PlaylistId {
@@ -117,31 +135,19 @@ impl Playlist {
     }
 }
 impl FullPlaylist {
-    pub fn new(playlist: Playlist) -> Self {
-        Self {
-            playlist,
-            songs: Vec::new(),
-        }
+    pub fn new(playlist: Playlist, songs: Arc<[Song]>) -> Self {
+        Self { playlist, songs }
     }
     pub fn playlist(&self) -> &Playlist {
         &self.playlist
     }
-    pub fn playlist_mut(&mut self) -> &mut Playlist {
-        &mut self.playlist
-    }
-    /// Add song to playlist, ignore duplicates
-    pub fn add_song(&mut self, song: Song) {
-        if !self.songs.iter().any(|s| s.id() == song.id()) {
-            self.songs.push(song)
-        }
-    }
     pub fn id(&self) -> &PlaylistId {
         self.playlist.id()
     }
-    pub fn songs(&self) -> &Vec<Song> {
+    pub fn songs(&self) -> &[Song] {
         &self.songs
     }
-    pub fn name(&self) -> &String {
+    pub fn name(&self) -> &str {
         self.playlist.name()
     }
 }

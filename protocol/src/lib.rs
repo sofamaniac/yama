@@ -1,13 +1,15 @@
+pub use iso8601;
 pub use playback::{PlayerInfo, Queue, Repeat, Volume};
 pub use playlist::{FullPlaylist, Playlist, PlaylistId, Song, SongId};
 use protocol_derive::Protocol;
-pub use std::time::Duration;
 use std::{fmt::Display, marker::PhantomData, sync::Arc};
 use thiserror::Error;
 pub use tokio::sync::oneshot::{Receiver, Sender};
 use uuid::Uuid;
 pub mod playback;
 pub mod playlist;
+
+pub type Duration = iso8601::Duration;
 
 pub type Result<T> = std::result::Result<T, Error>;
 pub type ResponseSender = tokio::sync::oneshot::Sender<Result<DataType>>;

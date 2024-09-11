@@ -1,5 +1,6 @@
-use std::time::Duration;
+use std::sync::Arc;
 
+use super::Duration;
 use crate::{
     playlist::{PlaylistId, Song, SongId},
     to_from_datatype, Playlist,
@@ -7,13 +8,29 @@ use crate::{
 
 use super::{Command as Cmd, DataType, Result, TypedAction, TypedResult};
 use protocol_derive::Protocol;
-use tokio::sync::oneshot::{Receiver, Sender};
 
 #[derive(Debug)]
 pub struct Volume(u8);
+impl Volume {
+    pub fn new(val: u8) -> Self {
+        Self(val.min(100))
+    }
+    pub fn add_delta(self, delta: VolumeDelta) -> Volume {
+        let VolumeDelta(delta) = delta;
+        Self::new(self.0.saturating_add_signed(delta))
+    }
+    pub fn to_u8(self) -> u8 {
+        self.0
+    }
+}
 to_from_datatype!(Volume);
 #[derive(Debug)]
-pub struct VolumeDelta(i8);
+pub struct VolumeDelta(pub(crate) i8);
+impl VolumeDelta {
+    pub fn new(delta: i8) -> Self {
+        Self(delta)
+    }
+}
 #[derive(Debug)]
 pub enum VolumeSetter {
     Absolute(Volume),
@@ -21,21 +38,23 @@ pub enum VolumeSetter {
 }
 #[derive(Debug)]
 pub enum SeekMode {
-    Absolute,
-    Forward,
-    Backward,
+    Absolute(Duration),
+    Forward(Duration),
+    Backward(Duration),
+    Percent(u8),
 }
 #[derive(Debug)]
 pub struct PlayerInfo {
-    status: PlayerStatus,
-    autoplay: bool,
-    shuffled: bool,
-    repeat: Repeat,
-    volume: Volume,
+    pub status: PlayerStatus,
+    pub autoplay: bool,
+    pub shuffled: bool,
+    pub repeat: Repeat,
+    pub volume: Volume,
 }
 to_from_datatype!(PlayerInfo);
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Repeat {
+    #[default]
     Off,
     Song,
     Playlist,
@@ -48,7 +67,7 @@ pub enum PlayerStatus {
 }
 #[derive(Debug)]
 pub enum Queue {
-    Songs(Vec<Song>),
+    Songs(Arc<[Song]>),
     Playlist(Playlist),
 }
 to_from_datatype!(Queue);
@@ -57,28 +76,22 @@ to_from_datatype!(Queue);
 pub enum Command {
     #[protocol(output = Volume, args_name = [volume])]
     SetVolume(VolumeSetter),
-    #[protocol(output = Volume)]
-    GetVolume,
     #[protocol(output = bool, args_name = [shuffle])]
     SetShuffle(bool),
-    #[protocol(output = bool)]
-    GetShuffle,
     #[protocol(output = bool, args_name = [autoplay])]
     SetAutoplay(bool),
-    #[protocol(output = bool)]
-    GetAutoplay,
     #[protocol(output = Repeat, args_name = [repeat])]
     SetRepeat(Repeat),
-    #[protocol(output = Repeat)]
-    GetRepeat,
     #[protocol(output = (), args_name = [song_id])]
     Play(Song),
     #[protocol(output = ())]
     Pause,
     #[protocol(output = ())]
+    PlayPause,
+    #[protocol(output = ())]
     Stop,
-    #[protocol(output = (), args_name = [seek_mode, duration])]
-    Seek(SeekMode, Duration),
+    #[protocol(output = (), args_name = [seek_mode])]
+    Seek(SeekMode),
     #[protocol(output = ())]
     NextSong,
     #[protocol(output = ())]

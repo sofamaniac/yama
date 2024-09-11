@@ -9,3 +9,4 @@ protocol_derive = { path = "./protocol_derive" }
 thiserror = "1.0.63"
 uuid = { version = "1.10.0", features = ["v4", "fast-rng"] }
 log = "0.4.22"
+iso8601 = "0.6.1"

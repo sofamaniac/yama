@@ -9,7 +9,7 @@ use google_youtube3::{
 
 use protocol::{
     playlist::{FullPlaylist, PlaylistId, Song, SongId},
-    Action, NotificationId, UICommand,
+    Action, Duration, NotificationId, UICommand,
 };
 use tokio::sync::{mpsc::Sender, Mutex};
 
@@ -17,6 +17,22 @@ type Result<T> = protocol::Result<T>;
 
 #[derive(Debug)]
 struct YtSong(pub(crate) Song);
+impl YtSong {
+    pub fn new(song: PlaylistItem, duration: Duration, artist: String) -> Self {
+        let snippet = song.snippet.unwrap_or_default();
+        let details = song.content_details.unwrap_or_default();
+        let song_id = SongId::new(details.video_id.unwrap_or_default());
+        let url = format!("https://youtube.com/watch?v={song_id}");
+        let song = Song::new(
+            song_id,
+            url,
+            snippet.title.unwrap().clone(),
+            duration,
+            vec![artist],
+        );
+        YtSong(song)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct YtPlaylist {
@@ -80,95 +96,6 @@ impl Source {
             connection_notification_id: connection_notif_id,
         }
     }
-    /* pub async fn get_all_playlists(&mut self) -> Vec<protocol::playlist::Playlist> {
-        if self.playlists.is_empty() {
-            let (_, playlists) = self
-                .hub
-                .playlists()
-                .list(&vec![String::from("snippet")])
-                .max_results(MAX_RESULT)
-                .mine(true)
-                .doit()
-                .await
-                .unwrap();
-            // TODO handle pagination
-            let items = playlists.items.unwrap_or_default();
-            let playlists = items.into_iter().map(Into::<YtPlaylist>::into);
-            for playlist in playlists {
-                if !self.playlists.contains_key(playlist.id()) {
-                    self.playlists.insert(playlist.id().clone(), playlist);
-                }
-            }
-            self.get_likes().await;
-        }
-        self.playlists
-            .values()
-            .map(|playlist| playlist.playlist.playlist().clone())
-            .collect()
-    }
-    pub async fn get_likes(&mut self) {
-        let (_, playlists) = self
-            .hub
-            .playlists()
-            .list(&vec![String::from("snippet")])
-            .max_results(MAX_RESULT)
-            .add_id("LL")
-            .doit()
-            .await
-            .unwrap();
-        let items = playlists.items.unwrap_or_default();
-        let playlists = items.into_iter().map(Into::<YtPlaylist>::into);
-        for playlist in playlists {
-            if !self.playlists.contains_key(playlist.id()) {
-                self.playlists.insert(playlist.id().clone(), playlist);
-            }
-        }
-    }
-
-    pub async fn get_playlist(
-        &mut self,
-        id: &PlaylistId,
-    ) -> Option<protocol::playlist::FullPlaylist> {
-        let playlist = self.playlists.get(id)?;
-        if !playlist.fully_loaded {
-            self.load_playlist(id).await;
-        }
-        Some(self.playlists.get(id).unwrap().playlist.clone())
-    }
-
-    pub async fn load_playlistpage(
-        &mut self,
-        id: &PlaylistId,
-        page_token: Option<String>,
-    ) -> Option<String> {
-        let (_, songs) = self
-            .hub
-            .playlist_items()
-            .list(&vec![
-                String::from("snippet"),
-                String::from("contentDetails"),
-            ])
-            .playlist_id(&id.to_string())
-            .max_results(MAX_RESULT)
-            .page_token(&page_token.unwrap_or_default())
-            .doit()
-            .await
-            .unwrap();
-        let yt_playlist = self.playlists.get_mut(id).unwrap();
-        for song in songs.items.unwrap_or_default().into_iter() {
-            let song: YtSong = song.into();
-            yt_playlist.playlist.add_song(song.into());
-        }
-        songs.next_page_token
-    }
-
-    pub async fn load_playlist(&mut self, id: &PlaylistId) {
-        let mut page_token: Option<String> = None;
-        while let Some(new_token) = self.load_playlistpage(id, page_token).await {
-            page_token = Some(new_token)
-        }
-        self.playlists.get_mut(id).unwrap().fully_loaded = true;
-    } */
 }
 
 impl From<api::Playlist> for YtPlaylist {
@@ -178,25 +105,12 @@ impl From<api::Playlist> for YtPlaylist {
             PlaylistId::new(playlist.id.unwrap()),
             snippet.title.unwrap(),
         );
-        let playlist = FullPlaylist::new(playlist);
+        let playlist = FullPlaylist::new(playlist, Arc::new([]));
         Self {
             playlist,
             fully_loaded: false,
             loading: false,
         }
-    }
-}
-
-impl From<PlaylistItem> for YtSong {
-    fn from(song: PlaylistItem) -> Self {
-        let snippet = song.snippet.unwrap_or_default();
-        let details = song.content_details.unwrap_or_default();
-        let song_id = SongId::new(details.video_id.unwrap_or_default());
-        let artist = snippet.channel_title.unwrap_or_default();
-        let url = format!("https://youtube.com/watch?v={song_id}");
-        let mut song = Song::new(song_id, url, snippet.title.unwrap().clone());
-        song.add_artist(artist);
-        YtSong(song)
     }
 }
 
@@ -256,17 +170,16 @@ impl Authenticator {
     }
 }
 pub async fn get_all_playlists(hub: &YouTube<HubType>) -> Vec<YtPlaylist> {
-    let (_, playlists) = hub
-        .playlists()
-        .list(&vec![String::from("snippet")])
-        .max_results(MAX_RESULT)
-        .mine(true)
-        .doit()
-        .await
-        .unwrap();
+    let playlists_request = || {
+        hub.playlists()
+            .list(&vec![String::from("snippet")])
+            .max_results(MAX_RESULT)
+    };
+    let (_, all_playlists) = playlists_request().mine(true).doit().await.unwrap();
     // TODO handle pagination
-    let items = playlists.items.unwrap_or_default();
-    // TODO get likes
+    let mut items = all_playlists.items.unwrap_or_default();
+    let (_, likes) = playlists_request().add_id("LL").doit().await.unwrap();
+    items.append(&mut likes.items.unwrap_or_default());
     items.into_iter().map(Into::<YtPlaylist>::into).collect()
 }
 pub async fn get_playlist(
@@ -275,20 +188,22 @@ pub async fn get_playlist(
 ) -> Option<FullPlaylist> {
     let mut page_token: Option<String> = None;
     let id = playlist.id().clone();
-    let mut full_playlist = FullPlaylist::new(playlist);
-    while let Some(new_token) = load_playlistpage(&hub, &id, &mut full_playlist, page_token).await {
+    let mut songs = Vec::new();
+    while let (mut new_songs, Some(new_token)) = load_playlistpage(&hub, &id, page_token).await {
+        songs.append(&mut new_songs);
         page_token = Some(new_token)
     }
+    let songs: Vec<Song> = songs.into_iter().map(Into::into).collect();
+    let full_playlist = FullPlaylist::new(playlist, songs.into());
     Some(full_playlist)
 }
 
 async fn load_playlistpage(
     hub: &YouTube<HubType>,
     id: &PlaylistId,
-    playlist: &mut FullPlaylist,
     page_token: Option<String>,
-) -> Option<String> {
-    let (_, songs) = hub
+) -> (Vec<YtSong>, Option<String>) {
+    let (_, body) = hub
         .playlist_items()
         .list(&vec![
             String::from("snippet"),
@@ -300,9 +215,58 @@ async fn load_playlistpage(
         .doit()
         .await
         .unwrap();
-    for song in songs.items.unwrap_or_default().into_iter() {
-        let song: YtSong = song.into();
-        playlist.add_song(song.into());
+    let songs = body.items.unwrap_or_default();
+    let songs_id: Vec<String> = songs.iter().map(get_video_id).collect();
+    let mut durations = get_video_length_and_artist(hub, &songs_id).await;
+    let songs = songs
+        .into_iter()
+        .filter_map(|song| {
+            let id = get_video_id(&song);
+            let (duration, artist) = durations.remove(&id).unwrap_or_default();
+            // Video without artists are not available
+            if !artist.is_empty() {
+                Some(YtSong::new(song, duration, artist))
+            } else {
+                None
+            }
+        })
+        .collect();
+    (songs, body.next_page_token)
+}
+
+fn get_video_id(item: &PlaylistItem) -> String {
+    item.content_details
+        .clone()
+        .unwrap()
+        .video_id
+        .unwrap_or_default()
+}
+
+async fn get_video_length_and_artist(
+    hub: &YouTube<HubType>,
+    ids: &[String],
+) -> HashMap<String, (Duration, String)> {
+    let request = hub
+        .videos()
+        .list(&vec![
+            String::from("contentDetails"),
+            String::from("snippet"),
+        ])
+        .max_results(MAX_RESULT);
+    let request = ids.iter().fold(request, |acc, id| acc.add_id(id));
+    let (_, songs_details) = request.doit().await.unwrap();
+
+    let mut res = HashMap::new();
+    for song in songs_details.items.expect("items not found") {
+        let details = song.content_details.expect("details not found");
+        let duration = details.duration.expect("duration not found");
+        let duration = protocol::iso8601::duration(&duration).expect("could not parse duration");
+        let artist = song
+            .snippet
+            .unwrap_or_default()
+            .channel_title
+            .unwrap_or_default();
+        res.insert(song.id.unwrap(), (duration, artist));
     }
-    songs.next_page_token
+    res
 }

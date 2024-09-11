@@ -1,20 +1,22 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::Mutex;
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
 use futures::StreamExt;
-use protocol::playlist::{FullPlaylist, Playlist, Song};
-use protocol::{playlist::PlaylistId, Action};
+use protocol::playback::{SeekMode, VolumeDelta, VolumeSetter};
+use protocol::{Action, Duration};
 use protocol::{DataType, NotificationId};
 
 use color_eyre::Result;
 use ratatui::crossterm::event::EventStream;
 use ratatui::layout::{Constraint, Flex, Layout};
-use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Clear, List, ListState, Paragraph};
+use ratatui::widgets::{Block, Clear, List, ListState, Paragraph, Widget};
 use ratatui::{DefaultTerminal, Frame};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+mod player_widget;
+mod source;
+use source::Source;
 
 #[derive(Debug)]
 struct Notification(pub String);
@@ -48,143 +50,10 @@ struct App {
     in_channel: mpsc::Receiver<Action>,
     youtube: Source,
     focused: bool,
-    notifications: Vec<(NotificationId, Notification)>,
+    notifications: Mutex<Vec<(NotificationId, Notification)>>,
     redraw_sender: mpsc::Sender<()>,
     redraw_receiver: mpsc::Receiver<()>,
     current_menu: Menu,
-}
-
-struct Source {
-    out_channel: mpsc::Sender<Action>,
-    playlists: RwLock<Arc<[Playlist]>>,
-    name: String,
-    current_playlist: usize,
-    current_song: usize,
-}
-
-impl Source {
-    pub fn new(out_channel: mpsc::Sender<Action>, name: String) -> Self {
-        Self {
-            out_channel,
-            playlists: RwLock::new(Arc::new([])),
-            name,
-            current_playlist: 0,
-            current_song: 0,
-        }
-    }
-    pub async fn init(&mut self) {
-        let action = protocol::playlist::Command::list_all();
-        let playlists = action.send(&self.out_channel).await.recv().await.unwrap();
-        *self.playlists.write().await = playlists;
-    }
-    pub async fn playlists_widget(&self) -> (List, ListState) {
-        let action = protocol::playlist::Command::list_all();
-        let res = action.send(&self.out_channel).await;
-        let maybe_res = res.recv().await;
-        let playlists = match maybe_res {
-            Ok(playlists) => playlists,
-            _ => Default::default(),
-        };
-        let items: Vec<String> = if !playlists.is_empty() {
-            if (tokio::time::timeout(std::time::Duration::from_millis(50), async {
-                *self.playlists.write().await = playlists.clone()
-            })
-            .await)
-                .is_ok()
-            {
-                playlists.iter().map(|p| p.name().clone()).collect()
-            } else {
-                vec![String::from("Timeout on write")]
-            }
-        } else {
-            vec![String::from("Loading")]
-        };
-        let state = if self.current_playlist < items.len() {
-            Some(self.current_playlist)
-        } else {
-            None
-        };
-        let list = List::new(items)
-            .block(
-                Block::bordered()
-                    .title("Playlists")
-                    .title_alignment(ratatui::layout::Alignment::Left),
-            )
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-        (list, ListState::default().with_selected(state))
-    }
-    pub async fn songs_widget(&self) -> (List, ListState) {
-        let songs: Vec<String> = {
-            if let Ok(playlists) = self.playlists.try_read() {
-                //let playlists = self.playlists.read().await;
-                if self.current_playlist < playlists.len() {
-                    let playlist = playlists[self.current_playlist].clone();
-                    let action = protocol::playlist::Command::get(playlist);
-                    let res = action.send(&self.out_channel).await;
-                    let maybe_res =
-                        tokio::time::timeout(std::time::Duration::from_millis(500), res.recv())
-                            .await;
-                    match maybe_res {
-                        Ok(Ok(playlist)) => {
-                            playlist.songs().iter().map(Song::title_clone).collect()
-                        }
-                        Err(err) => vec![err.to_string(), format!("{playlists:?}")],
-                        Ok(Err(err)) => vec![err.to_string()],
-                    }
-                } else {
-                    vec![String::from("out of range")]
-                }
-            } else {
-                vec![String::from("try_read failed")]
-            }
-        };
-        let state = if self.current_song < songs.len() {
-            Some(self.current_song)
-        } else {
-            None
-        };
-        let list = List::new(songs)
-            .block(
-                Block::bordered()
-                    .title("Songs")
-                    .title_alignment(ratatui::layout::Alignment::Left),
-            )
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-        (list, ListState::default().with_selected(state))
-    }
-    pub fn increase_playlist(&mut self) {
-        if let Ok(playlists) = self.playlists.try_read() {
-            if self.current_playlist < playlists.len().saturating_sub(1) {
-                self.current_playlist += 1;
-                self.current_song = 0;
-            }
-        }
-    }
-    pub fn decrease_playlist(&mut self) {
-        if self.current_playlist > 0 {
-            self.current_playlist -= 1;
-            self.current_song = 0;
-        }
-    }
-    pub fn increase_song(&mut self) {
-        self.current_song += 1;
-    }
-    pub fn decrease_song(&mut self) {
-        if self.current_song > 0 {
-            self.current_song -= 1;
-        }
-    }
-
-    async fn set_autoplay(&self, autoplay: bool) {
-        if autoplay {
-            let action = protocol::playback::Command::add_to_queue(protocol::Queue::Playlist(
-                self.playlists.read().await[self.current_playlist].clone(),
-            ));
-            action.send(&self.out_channel).await;
-        }
-        let action = protocol::playback::Command::set_autoplay(autoplay);
-        action.send(&self.out_channel).await;
-    }
 }
 
 impl App {
@@ -194,8 +63,9 @@ impl App {
         let cancel_token = CancellationToken::new();
         let (ui_tx, ui_rx) = tokio::sync::mpsc::channel(100);
         let (yt_tx, yt_rx) = tokio::sync::mpsc::channel(100);
-        let yt = youtube::Handler::new(yt_rx, ui_tx, cancel_token.child_token()).await;
+        let yt_cancel_token = cancel_token.child_token();
         tokio::task::spawn(async move {
+            let yt = youtube::Handler::new(yt_rx, ui_tx, yt_cancel_token).await;
             yt.run().await;
         });
         let (redraw_tx, redrax_rx) = tokio::sync::mpsc::channel(10);
@@ -204,7 +74,7 @@ impl App {
             in_channel: ui_rx,
             youtube: Source::new(yt_tx, String::from("youtube")),
             focused: true,
-            notifications: Vec::new(),
+            notifications: Mutex::new(Vec::new()),
             redraw_sender: redraw_tx,
             redraw_receiver: redrax_rx,
             current_menu: Menu::Playlist,
@@ -214,9 +84,8 @@ impl App {
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_millis(1000 / Self::FRAMERATE));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut event = EventStream::new();
-        //let youtube = self.youtube.clone();
-        // tokio::spawn(async move { youtube.lock().await.init().await });
         'runloop: loop {
             tokio::select! {
                 _ = self.should_quit.cancelled() => break 'runloop,
@@ -237,9 +106,12 @@ impl App {
         Ok(())
     }
     async fn execute_draw(&mut self, terminal: &mut DefaultTerminal) {
-        let (playlists, p_state) = self.youtube.playlists_widget().await;
-        let (songs, s_state) = self.youtube.songs_widget().await;
-        terminal.draw(|frame| self.draw(frame, playlists, songs, p_state, s_state));
+        let (playlists, p_state) = self.youtube.make_playlist_widget().await;
+        let (songs, s_state) = self.youtube.make_song_widget().await;
+        let options = self.youtube.option_widget().await;
+        let player = self.youtube.player_widget().await;
+        let _ = terminal
+            .draw(|frame| self.draw(frame, playlists, songs, p_state, s_state, options, player));
     }
     fn draw(
         &self,
@@ -248,6 +120,8 @@ impl App {
         songs: List,
         mut playlist_state: ListState,
         mut song_state: ListState,
+        options: impl Widget,
+        player: impl Widget,
     ) {
         let [main_area, player_area] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(4)])
@@ -255,21 +129,19 @@ impl App {
                 .areas(frame.area());
         let [left, songs_area] =
             Layout::horizontal([Constraint::Percentage(25), Constraint::Fill(1)]).areas(main_area);
-        let [sources, playlists_area, options] =
+        let [sources, playlists_area, options_area] =
             Layout::vertical([Constraint::Fill(1); 3]).areas(left);
         let outer_block = Block::bordered()
             .title("YAMA")
             .title_alignment(ratatui::layout::Alignment::Center);
 
         let sources_block = Block::bordered().title("Sources");
-        let options_block = Block::bordered().title("Options");
-        let player_block = Block::bordered().title("Player Info");
 
         frame.render_widget(Clear, frame.area());
         frame.render_widget(outer_block, frame.area());
         frame.render_widget(sources_block, sources);
-        frame.render_widget(options_block, options);
-        frame.render_widget(player_block, player_area);
+        frame.render_widget(options, options_area);
+        frame.render_widget(player, player_area);
         frame.render_stateful_widget(playlists, playlists_area, &mut playlist_state);
         frame.render_stateful_widget(songs, songs_area, &mut song_state);
 
@@ -277,7 +149,7 @@ impl App {
     }
 
     fn draw_notification(&self, frame: &mut Frame<'_>) {
-        if let Some((_notif_id, notif)) = self.notifications.last() {
+        if let Some((_notif_id, notif)) = self.notifications.lock().unwrap().last() {
             let [area] = Layout::horizontal([Constraint::Percentage(30)])
                 .flex(Flex::Center)
                 .areas(frame.area());
@@ -308,12 +180,14 @@ impl App {
                                 .into()
                         })
                         .map_err(Into::<protocol::Error>::into);
-                    response.send(res);
+                    let _ = response.send(res);
                 }
                 protocol::UICommand::CloseNotification(notification_id) => {
                     self.notifications
+                        .lock()
+                        .unwrap()
                         .retain(|&(notif_id, _)| notif_id != notification_id);
-                    response.send(Ok(().into()));
+                    let _ = response.send(Ok(().into()));
                 }
             },
             _ => (),
@@ -321,7 +195,10 @@ impl App {
     }
     fn new_notification(&mut self, message: String) -> NotificationId {
         let notif_id = NotificationId::new();
-        self.notifications.push((notif_id, Notification(message)));
+        self.notifications
+            .lock()
+            .unwrap()
+            .push((notif_id, Notification(message)));
         notif_id
     }
 
@@ -332,7 +209,9 @@ impl App {
             Event::Key(event) => self.handle_key_event(event).await,
             Event::Mouse(_) => todo!(),
             Event::Paste(_) => todo!(),
-            Event::Resize(_, _) => todo!(),
+            Event::Resize(_, _) => {
+                self.redraw_sender.send(()).await;
+            }
         }
     }
 
@@ -340,7 +219,9 @@ impl App {
         match event.code {
             KeyCode::Char('q') => self.should_quit.cancel(),
             KeyCode::Char('j') => match self.current_menu {
-                Menu::Song => self.youtube.increase_song(),
+                Menu::Song => {
+                    self.youtube.increase_song();
+                }
                 Menu::Playlist => self.youtube.increase_playlist(),
                 Menu::Source => (),
             },
@@ -351,11 +232,50 @@ impl App {
             },
             KeyCode::Char('h') => self.current_menu = self.current_menu.previous(),
             KeyCode::Char('l') => self.current_menu = self.current_menu.next(),
-            KeyCode::Char('a') => self.youtube.set_autoplay(true).await,
-            KeyCode::Char('A') => self.youtube.set_autoplay(false).await,
+            KeyCode::Char('a') => self.youtube.cycle_autoplay().await,
+            KeyCode::Char(' ') => self.youtube.toggle_pause().await,
+
+            KeyCode::Char('d') => {
+                self.youtube
+                    .set_volume(VolumeSetter::Relative(VolumeDelta::new(-5)))
+                    .await
+            }
+            KeyCode::Char('f') => {
+                self.youtube
+                    .set_volume(VolumeSetter::Relative(VolumeDelta::new(5)))
+                    .await
+            }
+            KeyCode::Char('<') => self.youtube.previous_song().await,
+            KeyCode::Char('>') => self.youtube.next_song().await,
+            KeyCode::Char('y') => self.youtube.cycle_shuffle().await,
+            KeyCode::Char('r') => self.youtube.cycle_repeat().await,
+            KeyCode::Left => {
+                self.youtube
+                    .seek(protocol::playback::SeekMode::Backward(new_delta_duration(
+                        5,
+                    )))
+                    .await
+            }
+            KeyCode::Right => {
+                self.youtube
+                    .seek(SeekMode::Forward(new_delta_duration(5)))
+                    .await
+            }
             _ => (),
         }
-        self.redraw_sender.send(()).await;
+        let _ = self.redraw_sender.send(()).await;
+    }
+}
+
+fn new_delta_duration(second: u32) -> Duration {
+    Duration::YMDHMS {
+        year: 0,
+        month: 0,
+        day: 0,
+        hour: 0,
+        minute: 0,
+        second,
+        millisecond: 0,
     }
 }
 
