@@ -27,7 +27,7 @@ impl From<Command> for Cmd {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PlaylistId(String);
 impl PlaylistId {
     pub fn new(id: String) -> Self {
@@ -101,13 +101,13 @@ impl Song {
         &self.artists
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct Playlist {
     id: PlaylistId,
     name: String,
     cover_url: Option<String>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct FullPlaylist {
     playlist: Playlist,
     songs: Arc<[Song]>,

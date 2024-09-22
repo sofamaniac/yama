@@ -4,6 +4,7 @@ pub use playlist::{FullPlaylist, Playlist, PlaylistId, Song, SongId};
 use protocol_derive::Protocol;
 use std::{fmt::Display, marker::PhantomData, sync::Arc};
 use thiserror::Error;
+use tokio::sync::mpsc;
 pub use tokio::sync::oneshot::{Receiver, Sender};
 use uuid::Uuid;
 pub mod playback;
@@ -44,10 +45,13 @@ impl<T> TypedAction<T> {
         channel.send(action).await;
         TypedResult::new(receiver)
     }
-    pub fn try_send(self, channel: &tokio::sync::mpsc::Sender<Action>) -> TypedResult<T> {
+    pub fn try_send(
+        self,
+        channel: &tokio::sync::mpsc::Sender<Action>,
+    ) -> std::result::Result<TypedResult<T>, mpsc::error::TrySendError<Action>> {
         let (action, receiver) = Action::new(self.command);
-        channel.try_send(action).expect("Channel full");
-        TypedResult::new(receiver)
+        channel.try_send(action)?;
+        Ok(TypedResult::new(receiver))
     }
 }
 pub struct TypedResult<T> {
@@ -85,11 +89,15 @@ macro_rules! to_datatype {
         }
     };
 }
+
+pub trait Receive<Target> {
+    fn recv(self) -> impl std::future::Future<Output = Target>;
+}
 #[macro_export]
 macro_rules! from_datatype {
     ($type: tt, $ident: tt) => {
-        impl TypedResult<Result<$type>> {
-            pub async fn recv(self) -> Result<$type> {
+        impl $crate::Receive<Result<$type>> for TypedResult<Result<$type>> {
+            async fn recv(self) -> Result<$type> {
                 let res = self.receiver.await?;
                 match res? {
                     DataType::$ident(val) => Ok(val),
@@ -138,7 +146,7 @@ pub enum Error {
     Loading,
 }
 
-#[derive(Debug, Protocol)]
+#[derive(Debug, Protocol, Clone)]
 pub enum UICommand {
     #[protocol(output = NotificationId, args_name = [ prompt ])]
     PromptUser(String),

@@ -9,7 +9,7 @@ use crate::{
 use super::{Command as Cmd, DataType, Result, TypedAction, TypedResult};
 use protocol_derive::Protocol;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Volume(u8);
 impl Volume {
     pub fn new(val: u8) -> Self {
@@ -43,7 +43,7 @@ pub enum SeekMode {
     Backward(Duration),
     Percent(u8),
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PlayerInfo {
     pub status: PlayerStatus,
     pub autoplay: bool,
@@ -60,7 +60,7 @@ pub enum Repeat {
     Playlist,
 }
 to_from_datatype!(Repeat);
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PlayerStatus {
     Stopped,
     Playing { song: Song, position: Duration },

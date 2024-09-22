@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use protocol::playback::SeekMode;
-use protocol::Duration;
 use protocol::{playback::VolumeSetter, Action, FullPlaylist, Playlist, Song};
+use protocol::{DataType, Receive, TypedAction, TypedResult};
 use ratatui::{
     style::{Modifier, Style},
     text::Line,
@@ -11,6 +11,23 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::player_widget::PlayerWiget;
+
+enum Error {
+    Protocol(protocol::Error),
+    Timeout,
+}
+impl From<protocol::Error> for Error {
+    fn from(value: protocol::Error) -> Self {
+        Error::Protocol(value)
+    }
+}
+impl From<tokio::time::error::Elapsed> for Error {
+    fn from(_value: tokio::time::error::Elapsed) -> Self {
+        Error::Timeout
+    }
+}
+
+type Result<T> = std::result::Result<T, Error>;
 
 pub struct Source {
     out_channel: mpsc::Sender<Action>,
@@ -78,6 +95,37 @@ pub struct PlaylistWidget {
     current_playlist: Option<usize>,
 }
 
+trait ActionTimeout {
+    fn out_channel(&self) -> &mpsc::Sender<Action>;
+    async fn action_timeout<T>(&self, action: TypedAction<protocol::Result<T>>) -> Result<T>
+    where
+        TypedResult<protocol::Result<T>>: Receive<protocol::Result<T>>,
+    {
+        use tokio::time::timeout;
+        let duration = std::time::Duration::from_millis(100);
+        let future = action.send(self.out_channel());
+        if let Ok(typed_res) = timeout(duration, future).await {
+            let future = typed_res.recv();
+            let res = timeout(duration, future).await?;
+            let res = res?;
+            Ok(res)
+        } else {
+            Err(Error::Timeout)
+        }
+    }
+}
+
+impl ActionTimeout for PlaylistWidget {
+    fn out_channel(&self) -> &mpsc::Sender<Action> {
+        &self.out_channel
+    }
+}
+impl ActionTimeout for SongsWidget {
+    fn out_channel(&self) -> &mpsc::Sender<Action> {
+        &self.out_channel
+    }
+}
+
 impl PlaylistWidget {
     pub(crate) fn new(out_channel: mpsc::Sender<Action>) -> Self {
         Self {
@@ -94,10 +142,7 @@ impl PlaylistWidget {
         let hl_style = Style::new().add_modifier(Modifier::REVERSED);
         if self.playlists.lock().unwrap().is_empty() {
             let action = protocol::playlist::Command::list_all();
-            let timeout = std::time::Duration::from_millis(100);
-            if let Ok(Ok(res)) =
-                tokio::time::timeout(timeout, action.send(&self.out_channel).await.recv()).await
-            {
+            if let Ok(res) = self.action_timeout(action).await {
                 *self.playlists.lock().unwrap() = res;
             } else {
                 return (
@@ -198,10 +243,7 @@ impl SongsWidget {
         let hl_style = Style::new().add_modifier(Modifier::REVERSED);
         if self.songs.lock().unwrap().is_none() {
             let action = protocol::playlist::Command::get(self.playlist.clone());
-            let timeout = std::time::Duration::from_millis(100);
-            if let Ok(Ok(res)) =
-                tokio::time::timeout(timeout, action.send(&self.out_channel).await.recv()).await
-            {
+            if let Ok(res) = self.action_timeout(action).await {
                 *self.songs.lock().unwrap() = Some(res);
             } else {
                 return (
@@ -233,6 +275,12 @@ impl SongsWidget {
         if let Some(index) = self.current_song {
             self.current_song = Some(index.saturating_sub(1));
         }
+    }
+}
+
+impl ActionTimeout for Source {
+    fn out_channel(&self) -> &mpsc::Sender<Action> {
+        &self.out_channel
     }
 }
 
@@ -280,21 +328,18 @@ impl Source {
             }
         }
         let action = protocol::playback::Command::set_autoplay(autoplay);
-        action.send(&self.out_channel).await;
+        let _ = action.send(&self.out_channel).await;
     }
 
     pub async fn toggle_pause(&self) {
         let action = protocol::playback::Command::play_pause();
-        action.send(&self.out_channel).await;
+        let _ = action.send(&self.out_channel).await;
     }
 
     pub async fn player_widget(&self) -> PlayerWiget {
         let action = protocol::playback::Command::get_info();
-        let info = action.send(&self.out_channel).await;
-        let timeout = std::time::Duration::from_millis(100);
-        let info = tokio::time::timeout(timeout, info.recv()).await;
-
-        let widget = if let Ok(Ok(info)) = info {
+        let info = self.action_timeout(action).await;
+        let widget = if let Ok(info) = info {
             PlayerWiget::new(info.status)
         } else {
             PlayerWiget::default()
@@ -304,11 +349,8 @@ impl Source {
 
     pub async fn option_widget(&self) -> Paragraph {
         let action = protocol::playback::Command::get_info();
-        let info = action.send(&self.out_channel).await;
-        let timeout = std::time::Duration::from_millis(100);
-        let info = tokio::time::timeout(timeout, info.recv()).await;
-
-        let paragraph = if let Ok(Ok(info)) = info {
+        let info = self.action_timeout(action).await;
+        let paragraph = if let Ok(info) = info {
             let text = vec![
                 Line::from(format!("Autoplay: {}", info.autoplay)),
                 Line::from(format!("Repeat: {:?}", info.repeat)),

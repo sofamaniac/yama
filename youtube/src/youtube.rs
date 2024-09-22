@@ -9,7 +9,7 @@ use google_youtube3::{
 
 use protocol::{
     playlist::{FullPlaylist, PlaylistId, Song, SongId},
-    Action, Duration, NotificationId, UICommand,
+    Action, Duration, NotificationId, Receive, UICommand,
 };
 use tokio::sync::{mpsc::Sender, Mutex};
 

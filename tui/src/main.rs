@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
 use futures::StreamExt;
@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 mod player_widget;
 mod source;
+mod ui;
 use source::Source;
 
 #[derive(Debug)]
@@ -65,7 +66,7 @@ impl App {
         let (yt_tx, yt_rx) = tokio::sync::mpsc::channel(100);
         let yt_cancel_token = cancel_token.child_token();
         tokio::task::spawn(async move {
-            let yt = youtube::Handler::new(yt_rx, ui_tx, yt_cancel_token).await;
+            let (yt, yt_tx) = youtube::Handler::new(ui_tx, yt_cancel_token).await;
             yt.run().await;
         });
         let (redraw_tx, redrax_rx) = tokio::sync::mpsc::channel(10);
@@ -283,7 +284,18 @@ fn new_delta_duration(second: u32) -> Duration {
 async fn main() -> Result<()> {
     color_eyre::install()?;
     let terminal = ratatui::init();
-    let app_result = App::new().await.run(terminal).await;
+    // let app_result = App::new().await.run(terminal).await;
+    let cancel_token = CancellationToken::new();
+    let (mut app, ui_tx) = ui::UI::new(cancel_token.clone(), Arc::new([]), terminal);
+    let (youtube, yt_tx) = youtube::Handler::new(ui_tx, cancel_token.child_token()).await;
+    app.add_source(ui::Source {
+        name: "Youtube".to_string(),
+        out_channel: yt_tx,
+    })
+    .await;
+    tokio::task::spawn(async move { youtube.run().await });
+    let app_task = tokio::task::spawn(async move { app.run().await });
+    app_task.await?;
     ratatui::restore();
-    app_result
+    Ok(())
 }

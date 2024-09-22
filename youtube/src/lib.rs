@@ -6,7 +6,7 @@ use std::{
 };
 
 use player::Player;
-use protocol::{playlist::PlaylistId, Action, DataType, FullPlaylist, UICommand};
+use protocol::{playlist::PlaylistId, Action, DataType, FullPlaylist, Playlist, UICommand};
 
 use tokio::{
     sync::{mpsc, RwLock},
@@ -28,21 +28,24 @@ pub struct Handler {
 
 impl Handler {
     pub async fn new(
-        in_channel: mpsc::Receiver<Action>,
         out_channel: mpsc::Sender<Action>,
         cancel_token: CancellationToken,
-    ) -> Self {
+    ) -> (Self, mpsc::Sender<Action>) {
+        let (in_tx, in_rx) = mpsc::channel(100);
         let youtube = Source::new(out_channel.clone()).await;
-        Self {
-            youtube,
-            playlists: Arc::new(Mutex::new(HashMap::new())),
-            loading_playlists: false,
-            out_channel,
-            in_channel,
-            tasks: JoinSet::new(),
-            should_quit: cancel_token,
-            player: Player::new(),
-        }
+        (
+            Self {
+                youtube,
+                playlists: Arc::new(Mutex::new(HashMap::new())),
+                loading_playlists: false,
+                out_channel,
+                in_channel: in_rx,
+                tasks: JoinSet::new(),
+                should_quit: cancel_token,
+                player: Player::new(),
+            },
+            in_tx,
+        )
     }
     pub async fn run(mut self) {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(3000));
@@ -54,13 +57,12 @@ impl Handler {
                 }
                 _ = interval.tick() => {
                     self.player.update();
-                    self.tasks.join_next().await;
                 }
+                Some(_) = self.tasks.join_next() => {}
             }
         }
     }
     async fn handle_action(&mut self, action: Action) {
-        // TODO await result with timeout
         let Action { command, response } = action;
         let res: DataType = match command {
             protocol::Command::Refresh => todo!(),
@@ -76,7 +78,6 @@ impl Handler {
                     let mut youtube_notif_id = self.youtube.connection_notification_id.lock().await;
                     if let Some(notif_id) = *youtube_notif_id {
                         let action = UICommand::close_notification(notif_id);
-                        // locks should not be held across `.await`
                         // We ignore the result
                         let _ = action.send(&self.out_channel).await;
                         *youtube_notif_id = None;
@@ -124,38 +125,7 @@ impl Handler {
                     Err(protocol::Error::Loading)
                 }
             }
-            protocol::playlist::Command::Get(playlist) => {
-                let mut lock = self.playlists.lock().unwrap();
-                if let Some(yt_playlist) = lock.get_mut(playlist.id()) {
-                    if yt_playlist.fully_loaded {
-                        Ok(Arc::new(yt_playlist.playlist.clone()).into())
-                    } else if !yt_playlist.loading {
-                        yt_playlist.loading = true;
-                        let handler_playlists = self.playlists.clone();
-                        let hub = self.youtube.hub.clone();
-                        let playlist = lock.get(playlist.id()).cloned();
-                        self.tasks.spawn(async move {
-                            // TODO refactor
-                            if let Some(playlist) = playlist {
-                                let playlist = playlist.playlist.playlist().clone();
-                                if let Some(playlist) = get_playlist(hub, playlist).await {
-                                    let mut handler_playlists = handler_playlists.lock().unwrap();
-                                    let playlist_mut =
-                                        handler_playlists.get_mut(playlist.id()).unwrap();
-                                    playlist_mut.playlist = playlist;
-                                    playlist_mut.loading = false;
-                                    playlist_mut.fully_loaded = true;
-                                }
-                            }
-                        });
-                        return Err(protocol::Error::Loading);
-                    } else {
-                        return Err(protocol::Error::Loading);
-                    }
-                } else {
-                    Err(protocol::Error::Loading)
-                }
-            }
+            protocol::playlist::Command::Get(playlist) => self.get_playlist(playlist).await,
             protocol::playlist::Command::Add(_, _) => todo!(),
             protocol::playlist::Command::Remove(_, _) => todo!(),
             protocol::playlist::Command::Delete(_) => todo!(),
@@ -196,7 +166,7 @@ impl Handler {
                         .await
                         .unwrap()
                     {
-                        let songs = playlist.songs().clone();
+                        let songs = playlist.songs();
                         self.player.set_playlist(songs);
                     }
                     ().into()
@@ -205,5 +175,32 @@ impl Handler {
             protocol::playback::Command::GetQueue => todo!(),
             protocol::playback::Command::GetInfo => self.player.info().into(),
         }
+    }
+
+    async fn get_playlist(&mut self, playlist: Playlist) -> protocol::Result<DataType> {
+        let mut lock = self.playlists.lock().unwrap();
+        if let Some(yt_playlist) = lock.get_mut(playlist.id()) {
+            if yt_playlist.fully_loaded {
+                return Ok(Arc::new(yt_playlist.playlist.clone()).into());
+            } else if !yt_playlist.loading {
+                yt_playlist.loading = true;
+                let handler_playlists = self.playlists.clone();
+                let hub = self.youtube.hub.clone();
+                let playlist = lock.get(playlist.id()).cloned();
+                self.tasks.spawn(async move {
+                    if let Some(playlist) = playlist {
+                        let playlist = playlist.playlist.playlist().clone();
+                        if let Some(playlist) = get_playlist(hub, playlist).await {
+                            let mut handler_playlists = handler_playlists.lock().unwrap();
+                            let playlist_mut = handler_playlists.get_mut(playlist.id()).unwrap();
+                            playlist_mut.playlist = playlist;
+                            playlist_mut.loading = false;
+                            playlist_mut.fully_loaded = true;
+                        }
+                    }
+                });
+            }
+        }
+        Err(protocol::Error::Loading)
     }
 }
