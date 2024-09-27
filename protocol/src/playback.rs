@@ -9,7 +9,7 @@ use crate::{
 use super::{Command as Cmd, DataType, Result, TypedAction, TypedResult};
 use protocol_derive::Protocol;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Volume(u8);
 impl Volume {
     pub fn new(val: u8) -> Self {
@@ -46,11 +46,27 @@ pub enum SeekMode {
 #[derive(Debug, Clone)]
 pub struct PlayerInfo {
     pub status: PlayerStatus,
+    pub paused: bool,
     pub autoplay: bool,
     pub shuffled: bool,
     pub repeat: Repeat,
     pub volume: Volume,
+    pub queue: Arc<[Song]>,
 }
+impl Default for PlayerInfo {
+    fn default() -> Self {
+        Self {
+            status: PlayerStatus::Stopped,
+            paused: false,
+            autoplay: false,
+            shuffled: false,
+            repeat: Default::default(),
+            volume: Volume(0),
+            queue: Default::default(),
+        }
+    }
+}
+
 to_from_datatype!(PlayerInfo);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Repeat {
@@ -82,10 +98,10 @@ pub enum Command {
     SetAutoplay(bool),
     #[protocol(output = Repeat, args_name = [repeat])]
     SetRepeat(Repeat),
+    #[protocol(output = (), args_name = [pause])]
+    SetPause(bool),
     #[protocol(output = (), args_name = [song_id])]
     Play(Song),
-    #[protocol(output = ())]
-    Pause,
     #[protocol(output = ())]
     PlayPause,
     #[protocol(output = ())]

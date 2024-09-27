@@ -146,8 +146,12 @@ impl Handler {
             }
             protocol::playback::Command::SetRepeat(repeat) => self.player.set_repeat(repeat).into(),
             protocol::playback::Command::Play(_) => todo!(),
-            protocol::playback::Command::Pause => {
-                self.player.pause();
+            protocol::playback::Command::SetPause(value) => {
+                if value {
+                    self.player.pause()
+                } else {
+                    self.player.unpause()
+                };
                 ().into()
             }
             protocol::playback::Command::PlayPause => {
@@ -159,14 +163,14 @@ impl Handler {
             protocol::playback::Command::NextSong => self.player.next().into(),
             protocol::playback::Command::PreviousSong => self.player.previous().into(),
             protocol::playback::Command::AddToQueue(queue) => match queue {
-                protocol::Queue::Songs(songs) => self.player.set_playlist(&songs).into(),
+                protocol::Queue::Songs(songs) => self.player.set_playlist(songs).into(),
                 protocol::Queue::Playlist(playlist) => {
                     if let DataType::Playlist(playlist) = self
                         .handle_playlist_command(protocol::playlist::Command::Get(playlist))
                         .await
                         .unwrap()
                     {
-                        let songs = playlist.songs();
+                        let songs: Arc<[protocol::Song]> = playlist.songs().into();
                         self.player.set_playlist(songs);
                     }
                     ().into()

@@ -10,7 +10,8 @@ use uuid::Uuid;
 pub mod playback;
 pub mod playlist;
 
-pub type Duration = iso8601::Duration;
+// pub type Duration = iso8601::Duration;
+pub type Duration = std::time::Duration;
 
 pub type Result<T> = std::result::Result<T, Error>;
 pub type ResponseSender = tokio::sync::oneshot::Sender<Result<DataType>>;
@@ -125,14 +126,20 @@ impl Action {
         )
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Protocol)]
 pub enum Command {
+    #[skip]
     Refresh,
+    #[skip]
     Restart,
-    Quit,
+    #[skip]
     Playlist(playlist::Command),
+    #[skip]
     Playback(playback::Command),
+    #[skip]
     UI(UICommand),
+    #[protocol(output = ())]
+    Quit,
 }
 #[derive(Debug, Error)]
 pub enum Error {

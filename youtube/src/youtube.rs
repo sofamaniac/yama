@@ -261,6 +261,7 @@ async fn get_video_length_and_artist(
         let details = song.content_details.expect("details not found");
         let duration = details.duration.expect("duration not found");
         let duration = protocol::iso8601::duration(&duration).expect("could not parse duration");
+        let duration: std::time::Duration = duration.into();
         let artist = song
             .snippet
             .unwrap_or_default()

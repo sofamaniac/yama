@@ -1,4 +1,4 @@
-use std::i64;
+use std::{i64, sync::Arc};
 
 use iso8601::duration;
 use libmpv::Mpv;
@@ -12,6 +12,7 @@ pub(crate) struct Player {
     player: Mpv,
     // original song position, and song
     queue: Vec<(usize, Song)>,
+    queue_arc: Arc<[Song]>,
     current_track: Option<Song>,
     // current position in queue
     current_index: Option<usize>,
@@ -33,6 +34,7 @@ impl Player {
             repeat: Repeat::Off,
             autoplay: false,
             shuffled: false,
+            queue_arc: Default::default(),
         }
     }
     pub fn update(&mut self) {
@@ -46,7 +48,7 @@ impl Player {
     }
     fn get_time_pos(&self) -> Duration {
         let pos: f64 = self.player.get_property("time-pos").unwrap_or_default();
-        duration(&format!("PT{}S", pos as u64)).unwrap_or_default()
+        Duration::try_from_secs_f64(pos).unwrap_or_default()
     }
     fn play_current_index(&mut self) {
         if let Some(index) = self.current_index {
@@ -57,7 +59,8 @@ impl Player {
         }
     }
 
-    pub fn set_playlist(&mut self, playlist: &[Song]) {
+    pub fn set_playlist(&mut self, playlist: Arc<[Song]>) {
+        self.queue_arc = playlist.clone();
         self.queue = Vec::with_capacity(playlist.len());
         for e in playlist.iter().cloned().enumerate() {
             self.queue.push(e)
@@ -112,6 +115,9 @@ impl Player {
     pub fn pause(&self) {
         self.player.pause();
     }
+    pub fn unpause(&self) {
+        self.player.unpause();
+    }
     pub fn playpause(&self) {
         self.player.cycle_property("pause", true);
     }
@@ -163,27 +169,29 @@ impl Player {
         };
         PlayerInfo {
             status,
+            paused: self.get_pause(),
             autoplay: self.autoplay,
             shuffled: self.shuffled,
             repeat: self.repeat,
             volume: self.get_volume(),
+            queue: self.queue_arc.clone(),
         }
     }
 
     pub(crate) fn seek(&self, mode: protocol::playback::SeekMode) {
         match mode {
             protocol::playback::SeekMode::Absolute(dur) => {
-                let duration: std::time::Duration = dur.into();
+                let duration: protocol::Duration = dur;
                 let seconds = duration.as_secs_f64();
                 let _ = self.player.seek_absolute(seconds);
             }
             protocol::playback::SeekMode::Forward(dur) => {
-                let duration: std::time::Duration = dur.into();
+                let duration: protocol::Duration = dur;
                 let seconds = duration.as_secs_f64();
                 let _ = self.player.seek_forward(seconds);
             }
             protocol::playback::SeekMode::Backward(dur) => {
-                let duration: std::time::Duration = dur.into();
+                let duration: protocol::Duration = dur;
                 let seconds = duration.as_secs_f64();
                 let _ = self.player.seek_backward(seconds);
             }
@@ -191,5 +199,9 @@ impl Player {
                 let _ = self.player.seek_percent_absolute(percent as usize);
             }
         }
+    }
+
+    fn get_pause(&self) -> bool {
+        self.player.get_property("pause").unwrap_or_default()
     }
 }

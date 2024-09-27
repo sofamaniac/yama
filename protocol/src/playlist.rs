@@ -55,7 +55,7 @@ impl Display for SongId {
         write!(f, "{}", self.0)
     }
 }
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Song {
     title: String,
     artists: Vec<String>,
@@ -99,6 +99,10 @@ impl Song {
 
     pub fn artists(&self) -> &[String] {
         &self.artists
+    }
+
+    pub fn cover_url(&self) -> Option<&String> {
+        self.cover_url.as_ref()
     }
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
