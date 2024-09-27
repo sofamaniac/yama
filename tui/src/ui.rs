@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     player_widget::{self, PlayerWiget},
-    Notification,
+    FullSource, Notification, Source,
 };
 
 #[derive(Default, Clone, Copy)]
@@ -52,6 +52,28 @@ impl Menu {
             Self::Playlist => Self::Source,
             Self::Song => Self::Playlist,
         }
+    }
+}
+#[derive(Default, Clone)]
+struct FullSourceWrapper {
+    full_sources: FullSource,
+    sources: Vec<Source>,
+}
+impl FullSourceWrapper {
+    pub fn new(sources: FullSource) -> Self {
+        Self {
+            full_sources: sources,
+            sources: Vec::new(),
+        }
+    }
+    pub async fn update(&mut self) {
+        let sources = self.full_sources.lock().await.sources.clone();
+        self.sources = sources;
+    }
+}
+impl ListWidget<FullSourceWrapper> {
+    async fn update(&mut self) {
+        self.elements.update().await
     }
 }
 trait Name {
@@ -96,16 +118,12 @@ impl<T: Elements> ListWidget<T> {
     }
     pub fn current(&self) -> Option<&T::Element> {
         if let Some(index) = self.state {
-            Some(&self.elements.elements()[index])
+            let elements = self.elements.elements();
+            elements.get(index)
         } else {
             None
         }
     }
-}
-#[derive(Clone)]
-pub struct Source {
-    pub name: String,
-    pub out_channel: mpsc::Sender<Action>,
 }
 impl<T: Elements> StatefulWidget for ListWidget<T> {
     type State = Option<usize>;
@@ -139,13 +157,13 @@ impl<T: Elements + Default> Default for ListWidget<T> {
         }
     }
 }
-impl Elements for Arc<[Source]> {
-    type Element = Source;
+impl Elements for FullSourceWrapper {
+    type Element = crate::Source;
     fn elements(&self) -> &[Self::Element] {
-        self
+        &self.sources
     }
     fn elements_name(&self) -> impl Iterator<Item = String> {
-        self.iter().map(|s| s.name.clone())
+        self.sources.clone().into_iter().map(|s| s.name)
     }
 }
 impl Elements for Arc<[Playlist]> {
@@ -168,7 +186,7 @@ impl Elements for Arc<FullPlaylist> {
 }
 #[derive(Default, Clone)]
 struct State {
-    sources: ListWidget<Arc<[Source]>>,
+    sources: ListWidget<FullSourceWrapper>,
     playlists: ListWidget<Arc<[Playlist]>>,
     songs: ListWidget<Arc<FullPlaylist>>,
     info: Option<PlayerInfo>,
@@ -261,12 +279,12 @@ pub struct UI {
 impl UI {
     pub fn new(
         cancel_token: CancellationToken,
-        sources: Arc<[Source]>,
+        sources: FullSource,
         terminal: DefaultTerminal,
     ) -> (Self, mpsc::Sender<Action>) {
         let (ui_tx, ui_rx) = mpsc::channel(100);
         let state = State {
-            sources: ListWidget::new(sources, String::from("Sources")),
+            sources: ListWidget::new(FullSourceWrapper::new(sources), String::from("Sources")),
             playlists: ListWidget::new(Default::default(), String::from("Playlists")),
             songs: ListWidget::new(Default::default(), String::from("Songs")),
             ..Default::default()
@@ -284,13 +302,6 @@ impl UI {
             },
             ui_tx,
         )
-    }
-    pub async fn add_source(&mut self, source: Source) {
-        let mut state = self.state.lock().await;
-        let mut sources = state.sources.elements.to_vec();
-        sources.push(source);
-        state.sources.elements = sources.into();
-        state.sources.state = Some(0);
     }
 
     pub async fn run(&mut self) {
@@ -361,20 +372,23 @@ impl UI {
     }
 
     async fn render(&mut self) {
+        {
+            self.state.lock().await.sources.update().await
+        }
         if let Some(source) = self.state.clone().lock().await.sources.current() {
             let state = self.state.clone();
-            let out_channel = source.out_channel.clone();
+            let out_channel = source.sender.clone();
             self.tasks.spawn(async move {
                 let action = protocol::playback::Command::get_info();
                 if let Ok(res) = action.try_send(&out_channel) {
                     if let Ok(info) = res.recv().await {
                         let mut state = state.lock().await;
-                        state.info = Some(info)
+                        state.info = Some(info);
                     }
                 }
             });
             let state = self.state.clone();
-            let out_channel = source.out_channel.clone();
+            let out_channel = source.sender.clone();
             self.tasks.spawn(async move {
                 let action = protocol::playlist::Command::list_all();
                 if let Ok(res) = action.try_send(&out_channel) {
@@ -388,7 +402,7 @@ impl UI {
                 }
             });
             let state = self.state.clone();
-            let out_channel = source.out_channel.clone();
+            let out_channel = source.sender.clone();
             self.tasks.spawn(async move {
                 let lock_state = state.lock().await;
                 if let Some(playlist) = lock_state.playlists.current() {
@@ -483,14 +497,16 @@ impl UI {
             Control::Source(source_action) => {
                 let state = self.state.lock().await;
                 if let Some(source) = state.sources.current() {
+                    // TODO: handle change of active source
+                    state.sources.elements.full_sources.lock().await.active = state.sources.state;
                     match source_action {
                         SourceControl::NextSong => {
                             let action = protocol::playback::Command::next_song();
-                            let _ = action.send(&source.out_channel).await;
+                            let _ = action.send(&source.sender).await;
                         }
                         SourceControl::PreviousSong => {
                             let action = protocol::playback::Command::previous_song();
-                            let _ = action.send(&source.out_channel).await;
+                            let _ = action.send(&source.sender).await;
                         }
                         SourceControl::ToggleAutoplay => {
                             if let Some(playlist) = state.playlists.current() {
@@ -499,34 +515,34 @@ impl UI {
                                     let action = protocol::playback::Command::add_to_queue(
                                         protocol::Queue::Playlist(playlist.clone()),
                                     );
-                                    action.send(&source.out_channel).await;
+                                    action.send(&source.sender).await;
                                 }
                                 let action = protocol::playback::Command::set_autoplay(!autoplay);
-                                let _ = action.send(&source.out_channel).await;
+                                let _ = action.send(&source.sender).await;
                             }
                         }
                         SourceControl::ToggleShuffle => {
                             let shuffled = state.shuffled();
                             let action = protocol::playback::Command::set_shuffle(!shuffled);
-                            let _ = action.send(&source.out_channel).await;
+                            let _ = action.send(&source.sender).await;
                         }
                         SourceControl::PlayPause => {
                             let action = protocol::playback::Command::play_pause();
-                            let _ = action.send(&source.out_channel).await;
+                            let _ = action.send(&source.sender).await;
                         }
                         SourceControl::CycleRepeat => {
                             let repeat = state.repeat();
                             let action =
                                 protocol::playback::Command::set_repeat(cycle_repeat(repeat));
-                            let _ = action.send(&source.out_channel).await;
+                            let _ = action.send(&source.sender).await;
                         }
                         SourceControl::ChangeVolume(setter) => {
                             let action = protocol::playback::Command::set_volume(setter);
-                            let _ = action.send(&source.out_channel).await;
+                            let _ = action.send(&source.sender).await;
                         }
                         SourceControl::Seek(seek) => {
                             let action = protocol::playback::Command::seek(seek);
-                            let _ = action.send(&source.out_channel).await;
+                            let _ = action.send(&source.sender).await;
                         }
                     }
                 }

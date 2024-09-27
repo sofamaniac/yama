@@ -10,7 +10,9 @@ use zbus::conn::Builder;
 use zbus::zvariant::{ObjectPath, Value};
 use zbus::{interface, zvariant};
 
-use protocol::{Action, Duration, PlayerInfo, Receive, Repeat, Song, Volume};
+use protocol::{Action, Duration, PlayerInfo, Receive, Repeat, Song, TypedAction, Volume};
+
+use crate::FullSource;
 
 /// Create [ObjectPath] from `song`, note that the DBus specification asks
 /// that trackid be unique for each entrie in a tracklist, including duplicates
@@ -42,8 +44,23 @@ fn make_metadata(song: &Song) -> HashMap<&str, Value> {
     res
 }
 
+trait SourceHandler {
+    fn sources(&self) -> &FullSource;
+
+    async fn send<T>(&self, action: TypedAction<T>) {
+        let sources = self.sources().lock().await;
+        if let Some(source) = sources.get_current() {
+            let _ = action.send(&source.sender).await;
+        }
+    }
+}
 struct BaseInterface {
-    sender: Sender<Action>,
+    sources: FullSource,
+}
+impl SourceHandler for BaseInterface {
+    fn sources(&self) -> &FullSource {
+        &self.sources
+    }
 }
 
 #[interface(name = "org.mpris.MediaPlayer2")]
@@ -62,7 +79,7 @@ impl BaseInterface {
     async fn quit(&self) {
         // ignore failure to send message
         let action = protocol::Command::quit();
-        let _ = action.send(&self.sender).await;
+        self.send(action).await;
     }
 
     #[zbus(property)]
@@ -88,7 +105,6 @@ impl BaseInterface {
 
 pub struct TrackListInterface {
     state: PlayerInfo,
-    sender: Sender<Action>,
 }
 
 #[interface(name = "org.mpris.MediaPlayer2.TrackList")]
@@ -127,38 +143,43 @@ impl TrackListInterface {
 
 pub struct PlayerInterface {
     state: PlayerInfo,
-    sender: Sender<Action>,
+    sources: FullSource,
+}
+impl SourceHandler for PlayerInterface {
+    fn sources(&self) -> &FullSource {
+        &self.sources
+    }
 }
 
 #[interface(name = "org.mpris.MediaPlayer2.Player")]
 impl PlayerInterface {
     async fn next(&self) {
         let action = protocol::playback::Command::next_song();
-        let _ = action.send(&self.sender).await;
+        self.send(action).await;
     }
     async fn previous(&self) {
         let action = protocol::playback::Command::previous_song();
-        let _ = action.send(&self.sender).await;
+        self.send(action).await;
     }
     async fn pause(&self) {
         let action = protocol::playback::Command::set_pause(true);
-        let _ = action.send(&self.sender).await;
+        self.send(action).await;
     }
     async fn unpause(&self) {
         let action = protocol::playback::Command::set_pause(false);
-        let _ = action.send(&self.sender).await;
+        self.send(action).await;
     }
     async fn play_pause(&self) {
         let action = protocol::playback::Command::play_pause();
-        let _ = action.send(&self.sender).await;
+        self.send(action).await;
     }
     async fn play(&self) {
         let action = protocol::playback::Command::set_pause(false);
-        let _ = action.send(&self.sender).await;
+        self.send(action).await;
     }
     async fn stop(&self) {
         let action = protocol::playback::Command::stop();
-        let _ = action.send(&self.sender).await;
+        self.send(action).await;
     }
     /// seek to current position + `offset` with `offset` in microseconds
     async fn seek(&self, offset: i64) {
@@ -170,7 +191,7 @@ impl PlayerInterface {
             SeekMode::Forward(duration)
         };
         let action = protocol::playback::Command::seek(seek_mode);
-        let _ = action.send(&self.sender).await;
+        self.send(action).await;
     }
     /// `position` is in microseconds, ignore if `trackid` is different
     /// from the currently playing `trackid`
@@ -187,7 +208,7 @@ impl PlayerInterface {
             } else {
                 let position = Duration::from_micros(position.unsigned_abs());
                 let action = protocol::playback::Command::seek(SeekMode::Absolute(position));
-                action.send(&self.sender).await;
+                self.send(action).await;
             }
         }
     }
@@ -237,7 +258,7 @@ impl PlayerInterface {
         let target: u8 = ((val * 100.0) as u8).min(100);
         let volume = VolumeSetter::Absolute(Volume::new(target));
         let action = protocol::playback::Command::set_volume(volume);
-        action.send(&self.sender).await;
+        self.send(action).await;
     }
     #[zbus(property)]
     fn position(&self) -> i64 {
@@ -282,17 +303,16 @@ impl PlayerInterface {
     }
 }
 
-pub async fn start(sender: Sender<Action>, cancel_token: CancellationToken) -> Result<()> {
+pub async fn start(sources: FullSource, cancel_token: CancellationToken) -> Result<()> {
     debug!("Starting dbus");
     let base = BaseInterface {
-        sender: sender.clone(),
+        sources: sources.clone(),
     };
     let player = PlayerInterface {
-        sender: sender.clone(),
+        sources: sources.clone(),
         state: PlayerInfo::default(),
     };
     let tracklist = TrackListInterface {
-        sender: sender.clone(),
         state: PlayerInfo::default(),
     };
     let mut old_state = PlayerInfo::default();
@@ -317,47 +337,49 @@ pub async fn start(sender: Sender<Action>, cancel_token: CancellationToken) -> R
         tokio::select! {
             _ = cancel_token.cancelled() => { break }
             _ = interval.tick() => {
-                let action = protocol::playback::Command::get_info();
-                if let Ok(state) = action.send(&sender).await.recv().await {
-                    // getting interface objects
-                    let mut player_iface = player_iface_ref.get_mut().await;
-                    // copying new state to interfaces
-                    // in order to send up to date info on the dbus
-                    player_iface.state = state.clone();
+                if let Some(sender) = sources.lock().await.get_current() {
+                    let action = protocol::playback::Command::get_info();
+                    if let Ok(state) = action.send(&sender.sender).await.recv().await {
+                        // getting interface objects
+                        let mut player_iface = player_iface_ref.get_mut().await;
+                        // copying new state to interfaces
+                        // in order to send up to date info on the dbus
+                        player_iface.state = state.clone();
 
-                    let context = player_iface_ref.signal_context();
-                    match (&old_state.status, &state.status) {
-                        (
-                            PlayerStatus::Playing { song: old_song, .. },
-                            PlayerStatus::Playing { song: new_song, .. },
-                        ) if old_song != new_song => {
-                            player_iface.metadata_changed(context).await?;
+                        let context = player_iface_ref.signal_context();
+                        match (&old_state.status, &state.status) {
+                            (
+                                PlayerStatus::Playing { song: old_song, .. },
+                                PlayerStatus::Playing { song: new_song, .. },
+                            ) if old_song != new_song => {
+                                player_iface.metadata_changed(context).await?;
+                            }
+                            (PlayerStatus::Stopped, PlayerStatus::Playing {..})
+                            | (PlayerStatus::Playing {..}, PlayerStatus::Stopped) => {
+                                player_iface.playback_status_changed(context).await?;
+                            }
+                            _ => ()
                         }
-                        (PlayerStatus::Stopped, PlayerStatus::Playing {..})
-                        | (PlayerStatus::Playing {..}, PlayerStatus::Stopped) => {
+                        if old_state.paused != state.paused {
                             player_iface.playback_status_changed(context).await?;
                         }
-                        _ => ()
+                        if old_state.shuffled != state.shuffled {
+                            player_iface.shuffle_changed(context).await?;
+                        }
+                        if old_state.repeat != state.repeat {
+                            player_iface.loop_status_changed(context).await?;
+                        }
+                        if old_state.volume != state.volume {
+                            player_iface.volume_changed(context).await?;
+                        }
+                        old_state = state.clone();
+                        // /!\ MUST be dropped before accessing interface
+                        drop(player_iface);
+                        let mut tracklist_iface = tracklist_iface_ref.get_mut().await;
+                        tracklist_iface.state = state.clone();
+                        // TODO send tracklistchanged signal when necessary
+                        drop(tracklist_iface);
                     }
-                    if old_state.paused != state.paused {
-                        player_iface.playback_status_changed(context).await?;
-                    }
-                    if old_state.shuffled != state.shuffled {
-                        player_iface.shuffle_changed(context).await?;
-                    }
-                    if old_state.repeat != state.repeat {
-                        player_iface.loop_status_changed(context).await?;
-                    }
-                    if old_state.volume != state.volume {
-                        player_iface.volume_changed(context).await?;
-                    }
-                    old_state = state.clone();
-                    // /!\ MUST be dropped before accessing interface
-                    drop(player_iface);
-                    let mut tracklist_iface = tracklist_iface_ref.get_mut().await;
-                    tracklist_iface.state = state.clone();
-                    // TODO send tracklistchanged signal when necessary
-                    drop(tracklist_iface);
                 }
             }
         };
