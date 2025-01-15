@@ -1,16 +1,13 @@
-use std::{
-    ops::Deref,
-    sync::{Arc, LazyLock},
-};
+use std::{ops::Deref, sync::Arc};
 
-use color_eyre::Result;
+use anyhow::{bail, Result};
+
 use protocol::Action;
 use tokio::sync::{mpsc::Sender, Mutex};
 use tokio_util::sync::CancellationToken;
 
 mod dbus;
 mod player_widget;
-mod source;
 mod ui;
 
 #[derive(Debug)]
@@ -35,7 +32,7 @@ impl Sources {
             active: None,
         }
     }
-    fn get_current(&self) -> Option<&Source> {
+    fn get_active(&self) -> Option<&Source> {
         if let Some(index) = self.active {
             self.sources.get(index)
         } else {
@@ -60,23 +57,20 @@ impl FullSource {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    color_eyre::install()?;
+    let Ok(_) = color_eyre::install() else {
+        bail!("Could not initialize color_eyre")
+    };
     let terminal = ratatui::init();
     let cancel_token = CancellationToken::new();
-    // let app_result = App::new().await.run(terminal).await;
     let mut sources = FullSource(Arc::new(Mutex::new(Sources::new())));
     let (mut app, ui_tx) = ui::UI::new(cancel_token.clone(), sources.clone(), terminal);
     let (youtube, yt_tx) = youtube::Handler::new(ui_tx, cancel_token.child_token()).await;
     sources.add(String::from("Youtube"), yt_tx).await;
-    // app.add_source(ui::Source {
-    //     name: "Youtube".to_string(),
-    //     out_channel: yt_tx.clone(),
-    // })
-    // .await;
     tokio::task::spawn(async move { youtube.run().await });
     tokio::task::spawn(async move { dbus::start(sources.clone(), cancel_token).await });
     let app_task = tokio::task::spawn(async move { app.run().await });
-    app_task.await?;
+    let res = app_task.await;
     ratatui::restore();
+    res?;
     Ok(())
 }

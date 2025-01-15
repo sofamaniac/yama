@@ -15,7 +15,7 @@ pub struct PlayerWiget<'a> {
     style: Option<Style>,
 }
 
-impl<'a> Default for PlayerWiget<'a> {
+impl Default for PlayerWiget<'_> {
     fn default() -> Self {
         Self::new(PlayerStatus::Stopped)
     }
@@ -35,15 +35,9 @@ impl<'a> PlayerWiget<'a> {
             ..self
         }
     }
-    pub fn style(self, style: Style) -> Self {
-        Self {
-            style: Some(style),
-            ..self
-        }
-    }
 }
 
-impl<'a> Widget for PlayerWiget<'a> {
+impl Widget for PlayerWiget<'_> {
     fn render(self, area: ratatui::prelude::Rect, buf: &mut ratatui::prelude::Buffer)
     where
         Self: Sized,
@@ -73,8 +67,8 @@ impl<'a> Widget for PlayerWiget<'a> {
             duration.render(duration_area, buf);
 
             // Rendering progress bar
-            let song_duration: std::time::Duration = song.duration().into();
-            let position: std::time::Duration = position.into();
+            let song_duration: std::time::Duration = song.duration();
+            let position: std::time::Duration = position;
             let ratio = position.as_secs_f64() / song_duration.as_secs_f64().max(1.0);
             let ratio = ratio.min(1.0);
             let fill_length = (gauge_area.width as f64 * ratio) as usize;
@@ -90,13 +84,10 @@ impl<'a> Widget for PlayerWiget<'a> {
             }
             let gauge = Line::from(format!("{first_char}{filled_part}{empty_part}{last_char}"));
             gauge.render(gauge_area, buf);
-        } else {
-            return;
         }
     }
 }
 fn duration_to_str(duration: Duration) -> String {
-    let duration: std::time::Duration = duration.into();
     let hours = duration.as_secs() / 3600;
     let minutes = duration.as_secs() / 60;
     let seconds = duration.as_secs() % 60;

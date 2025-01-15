@@ -4,13 +4,12 @@ use protocol::playback::{PlayerStatus, SeekMode, VolumeSetter};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use zbus::conn::Builder;
 use zbus::zvariant::{ObjectPath, Value};
 use zbus::{interface, zvariant};
 
-use protocol::{Action, Duration, PlayerInfo, Receive, Repeat, Song, TypedAction, Volume};
+use protocol::{Duration, PlayerInfo, Receive, Repeat, Song, TypedAction, Volume};
 
 use crate::FullSource;
 
@@ -49,7 +48,7 @@ trait SourceHandler {
 
     async fn send<T>(&self, action: TypedAction<T>) {
         let sources = self.sources().lock().await;
-        if let Some(source) = sources.get_current() {
+        if let Some(source) = sources.get_active() {
             let _ = action.send(&source.sender).await;
         }
     }
@@ -337,7 +336,7 @@ pub async fn start(sources: FullSource, cancel_token: CancellationToken) -> Resu
         tokio::select! {
             _ = cancel_token.cancelled() => { break }
             _ = interval.tick() => {
-                if let Some(sender) = sources.lock().await.get_current() {
+                if let Some(sender) = sources.lock().await.get_active() {
                     let action = protocol::playback::Command::get_info();
                     if let Ok(state) = action.send(&sender.sender).await.recv().await {
                         // getting interface objects
@@ -346,7 +345,7 @@ pub async fn start(sources: FullSource, cancel_token: CancellationToken) -> Resu
                         // in order to send up to date info on the dbus
                         player_iface.state = state.clone();
 
-                        let context = player_iface_ref.signal_context();
+                        let context = player_iface_ref.signal_emitter();
                         match (&old_state.status, &state.status) {
                             (
                                 PlayerStatus::Playing { song: old_song, .. },

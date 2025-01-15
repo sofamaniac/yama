@@ -1,22 +1,17 @@
-use std::{
-    cell::{Cell, RefCell},
-    collections::HashMap,
-    ops::Deref,
-    sync::Arc,
-};
+use std::{cell::RefCell, sync::Arc};
 
 use crossterm::event::{EventStream, KeyCode};
 use futures::StreamExt;
 use protocol::{
     playback::{SeekMode, VolumeDelta, VolumeSetter},
-    Action, Command, FullPlaylist, NotificationId, PlayerInfo, Playlist, Receive, Repeat, Song,
-    UICommand,
+    Action, Command, Duration, FullPlaylist, NotificationId, PlayerInfo, Playlist, Receive, Repeat,
+    Song, UICommand,
 };
 use ratatui::{
     layout::{Constraint, Flex, Layout},
     style::{Modifier, Style},
     text::Line,
-    widgets::{Block, Clear, ListState, Paragraph, StatefulWidget, Widget},
+    widgets::{Block, Clear, Paragraph, StatefulWidget},
     DefaultTerminal, Frame,
 };
 use tokio::{
@@ -25,10 +20,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    player_widget::{self, PlayerWiget},
-    FullSource, Notification, Source,
-};
+use crate::{player_widget::PlayerWiget, FullSource, Notification, Source};
 
 #[derive(Default, Clone, Copy)]
 enum Menu {
@@ -75,9 +67,6 @@ impl ListWidget<FullSourceWrapper> {
     async fn update(&mut self) {
         self.elements.update().await
     }
-}
-trait Name {
-    fn name(&self) -> &str;
 }
 trait Elements {
     type Element;
@@ -222,10 +211,10 @@ impl State {
         }
     }
     pub fn autoplay(&self) -> bool {
-        self.info.as_ref().map_or(false, |info| info.autoplay)
+        self.info.as_ref().is_some_and(|info| info.autoplay)
     }
     pub fn shuffled(&self) -> bool {
-        self.info.as_ref().map_or(false, |info| info.shuffled)
+        self.info.as_ref().is_some_and(|info| info.shuffled)
     }
     pub fn repeat(&self) -> Repeat {
         self.info.as_ref().map_or(Repeat::Off, |info| info.repeat)
@@ -333,7 +322,7 @@ impl UI {
         match command {
             UICommand::OpenUrl(message) => match open::that(message) {
                 Ok(_) => {
-                    let notif_id = NotificationId::new();
+                    let notif_id = NotificationId::new_random();
                     self.notifications
                         .push((notif_id, Notification(String::from("Check your browser"))));
                     let _ = action.response.send(Ok(notif_id.into()));
@@ -343,7 +332,7 @@ impl UI {
                 }
             },
             UICommand::InformUser(message) => {
-                let notif_id = NotificationId::new();
+                let notif_id = NotificationId::new_random();
                 self.notifications.push((notif_id, Notification(message)));
                 let _ = action.response.send(Ok(notif_id.into()));
             }
@@ -372,9 +361,7 @@ impl UI {
     }
 
     async fn render(&mut self) {
-        {
-            self.state.lock().await.sources.update().await
-        }
+        self.state.lock().await.sources.update().await;
         if let Some(source) = self.state.clone().lock().await.sources.current() {
             let state = self.state.clone();
             let out_channel = source.sender.clone();
@@ -419,7 +406,7 @@ impl UI {
         }
         let state = self.state.lock().await.clone();
         let mut terminal = self.terminal.try_borrow_mut().unwrap();
-        terminal.draw(|frame| self.draw(frame, &state));
+        let _ = terminal.draw(|frame| self.draw(frame, &state));
     }
 
     fn draw(&self, frame: &mut Frame, state: &State) {
@@ -497,8 +484,15 @@ impl UI {
             Control::Source(source_action) => {
                 let state = self.state.lock().await;
                 if let Some(source) = state.sources.current() {
-                    // TODO: handle change of active source
-                    state.sources.elements.full_sources.lock().await.active = state.sources.state;
+                    let mut full_state = state.sources.elements.full_sources.lock().await;
+                    if full_state.active != state.sources.state {
+                        let action = protocol::playback::Command::stop();
+                        if let Some(source) = full_state.get_active() {
+                            action.send(&source.sender).await;
+                        }
+                    }
+                    full_state.active = state.sources.state;
+                    drop(full_state);
                     match source_action {
                         SourceControl::NextSong => {
                             let action = protocol::playback::Command::next_song();
@@ -569,6 +563,8 @@ impl UI {
             KeyCode::Char('f') => {
                 SourceControl::ChangeVolume(VolumeSetter::Relative(VolumeDelta::new(5))).into()
             }
+            KeyCode::Left => SourceControl::Seek(SeekMode::Backward(Duration::from_secs(5))).into(),
+            KeyCode::Right => SourceControl::Seek(SeekMode::Forward(Duration::from_secs(5))).into(),
             KeyCode::Esc => Control::PopNotification,
             _ => return,
         };

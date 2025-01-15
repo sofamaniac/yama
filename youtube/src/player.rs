@@ -1,6 +1,5 @@
-use std::{i64, sync::Arc};
+use std::sync::Arc;
 
-use iso8601::duration;
 use libmpv::Mpv;
 use protocol::{
     playback::{PlayerStatus, Volume, VolumeSetter},
@@ -24,8 +23,9 @@ pub(crate) struct Player {
 impl Player {
     pub fn new() -> Self {
         let player = Mpv::new().unwrap();
-        player.set_property("video", false);
-        player.set_property("ytdl", true);
+        let _ = player.set_property("video", false);
+        let _ = player.set_property("ytdl", true);
+        let _ = player.set_property("ytdl-raw-options", "cookies-from-browser=firefox");
         Self {
             player,
             queue: Vec::new(),
@@ -54,7 +54,7 @@ impl Player {
         if let Some(index) = self.current_index {
             if let Some((_, song)) = self.queue.get(index) {
                 self.current_track = Some(song.clone());
-                self.player.command("loadfile", &[song.url()]);
+                let _ = self.player.command("loadfile", &[song.url()]);
             }
         }
     }
@@ -113,14 +113,15 @@ impl Player {
     }
 
     pub fn pause(&self) {
-        self.player.pause();
+        let _ = self.player.pause();
     }
     pub fn unpause(&self) {
-        self.player.unpause();
+        let _ = self.player.unpause();
     }
     pub fn playpause(&self) {
-        self.player.cycle_property("pause", true);
+        let _ = self.player.cycle_property("pause", true);
     }
+    #[allow(dead_code)]
     pub fn stop(&self) {
         todo!()
     }
@@ -137,7 +138,7 @@ impl Player {
     }
     pub fn set_volume(&mut self, volume_setter: VolumeSetter) {
         let volume = self.get_volume();
-        match volume_setter {
+        let _ = match volume_setter {
             VolumeSetter::Absolute(volume) => {
                 self.player.set_property("volume", volume.to_u8() as i64)
             }
@@ -150,7 +151,10 @@ impl Player {
         let val: i64 = self.player.get_property("volume").unwrap_or_default();
         Volume::new(val as u8)
     }
-    pub fn play_song(&mut self, song: Song) {}
+    #[allow(dead_code)]
+    pub fn play_song(&mut self, _song: Song) {
+        todo!()
+    }
     pub fn set_autoplay(&mut self, autoplay: bool) {
         self.autoplay = autoplay;
         if autoplay {

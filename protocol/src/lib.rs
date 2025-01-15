@@ -43,7 +43,8 @@ impl<T> TypedAction<T> {
     }
     pub async fn send(self, channel: &tokio::sync::mpsc::Sender<Action>) -> TypedResult<T> {
         let (action, receiver) = Action::new(self.command);
-        channel.send(action).await;
+        // TODO: this should probably be used ?
+        let _ = channel.send(action).await;
         TypedResult::new(receiver)
     }
     pub fn try_send(
@@ -173,7 +174,7 @@ impl From<UICommand> for Command {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NotificationId(Uuid);
 impl NotificationId {
-    pub fn new() -> Self {
+    pub fn new_random() -> Self {
         Self(Uuid::new_v4())
     }
 }

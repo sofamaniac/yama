@@ -6,12 +6,9 @@ use std::{
 };
 
 use player::Player;
-use protocol::{playlist::PlaylistId, Action, DataType, FullPlaylist, Playlist, UICommand};
+use protocol::{playlist::PlaylistId, Action, DataType, Playlist, UICommand};
 
-use tokio::{
-    sync::{mpsc, RwLock},
-    task::JoinSet,
-};
+use tokio::{sync::mpsc, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 use youtube::{get_all_playlists, get_playlist, Source, YtPlaylist};
 
@@ -90,7 +87,7 @@ impl Handler {
             protocol::Command::Playback(command) => self.handle_player_command(command).await,
             protocol::Command::UI(_) => ().into(),
         };
-        response.send(Ok(res));
+        let _ = response.send(Ok(res));
     }
 
     pub async fn handle_playlist_command(
@@ -139,12 +136,18 @@ impl Handler {
                 self.player.set_volume(volume);
                 ().into()
             }
-            protocol::playback::Command::SetShuffle(shuffle) => self.player.shuffle(shuffle).into(),
+            protocol::playback::Command::SetShuffle(shuffle) => {
+                self.player.shuffle(shuffle);
+                ().into()
+            }
             protocol::playback::Command::SetAutoplay(autoplay) => {
                 self.player.set_autoplay(autoplay);
                 ().into()
             }
-            protocol::playback::Command::SetRepeat(repeat) => self.player.set_repeat(repeat).into(),
+            protocol::playback::Command::SetRepeat(repeat) => {
+                self.player.set_repeat(repeat);
+                ().into()
+            }
             protocol::playback::Command::Play(_) => todo!(),
             protocol::playback::Command::SetPause(value) => {
                 if value {
@@ -159,11 +162,23 @@ impl Handler {
                 ().into()
             }
             protocol::playback::Command::Stop => todo!(),
-            protocol::playback::Command::Seek(mode) => self.player.seek(mode).into(),
-            protocol::playback::Command::NextSong => self.player.next().into(),
-            protocol::playback::Command::PreviousSong => self.player.previous().into(),
+            protocol::playback::Command::Seek(mode) => {
+                self.player.seek(mode);
+                ().into()
+            }
+            protocol::playback::Command::NextSong => {
+                self.player.next();
+                ().into()
+            }
+            protocol::playback::Command::PreviousSong => {
+                self.player.previous();
+                ().into()
+            }
             protocol::playback::Command::AddToQueue(queue) => match queue {
-                protocol::Queue::Songs(songs) => self.player.set_playlist(songs).into(),
+                protocol::Queue::Songs(songs) => {
+                    self.player.set_playlist(songs);
+                    ().into()
+                }
                 protocol::Queue::Playlist(playlist) => {
                     if let DataType::Playlist(playlist) = self
                         .handle_playlist_command(protocol::playlist::Command::Get(playlist))

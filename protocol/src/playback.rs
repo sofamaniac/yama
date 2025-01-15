@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use super::Duration;
-use crate::{
-    playlist::{PlaylistId, Song, SongId},
-    to_from_datatype, Playlist,
-};
+use crate::{playlist::Song, to_from_datatype, Playlist};
 
 use super::{Command as Cmd, DataType, Result, TypedAction, TypedResult};
 use protocol_derive::Protocol;

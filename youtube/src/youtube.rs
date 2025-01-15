@@ -1,9 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
+use directories::ProjectDirs;
 use google_youtube3::{
-    api::{self, Playlist, PlaylistItem, PlaylistItemListResponse, PlaylistListResponse},
-    hyper, hyper_rustls,
-    oauth2::{self, authenticator_delegate::InstalledFlowDelegate},
+    api::{self, Playlist, PlaylistItem},
+    hyper_rustls, hyper_util,
+    yup_oauth2::{self, authenticator_delegate::InstalledFlowDelegate},
     YouTube,
 };
 
@@ -12,8 +13,6 @@ use protocol::{
     Action, Duration, NotificationId, Receive, UICommand,
 };
 use tokio::sync::{mpsc::Sender, Mutex};
-
-type Result<T> = protocol::Result<T>;
 
 #[derive(Debug)]
 struct YtSong(pub(crate) Song);
@@ -48,8 +47,6 @@ impl YtPlaylist {
 const MAX_RESULT: u32 = 50;
 pub struct Source {
     pub(crate) hub: YouTube<HubType>,
-    ui_channel: Sender<Action>,
-    // playlists: HashMap<PlaylistId, YtPlaylist>,
     pub(crate) connection_notification_id: Arc<Mutex<Option<NotificationId>>>,
 }
 struct Authenticator {
@@ -57,42 +54,47 @@ struct Authenticator {
     connection_notification_id: Arc<Mutex<Option<NotificationId>>>,
 }
 
-// type HubType = hyper::Client<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>>;
-pub type HubType = hyper_rustls::HttpsConnector<hyper::client::HttpConnector>;
+pub type HubType = hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 
 impl Source {
     pub async fn new(ui_channel: Sender<Action>) -> Self {
+        let project_dirs = ProjectDirs::from("com", "yama", "yama")
+            .expect("Could not initialize project directories");
+        let cache_dir = project_dirs.cache_dir();
+        let config_dir = project_dirs.config_dir();
+        let mut secrets_path = config_dir.to_path_buf();
+        secrets_path.push("yt_secrets.json");
         let connection_notif_id = Arc::new(Mutex::new(None));
         let secret =
-            oauth2::read_application_secret("/home/sofamaniac/.config/yamav3/yt_secrets.json")
+            //oauth2::read_application_secret("/home/sofamaniac/.config/yamav3/yt_secrets.json")
+            yup_oauth2::read_application_secret(secrets_path)
                 .await
                 .expect("Could not read secrets");
-        let auth = oauth2::InstalledFlowAuthenticator::builder(
+        let auth = yup_oauth2::InstalledFlowAuthenticator::builder(
             secret,
-            oauth2::InstalledFlowReturnMethod::HTTPRedirect,
+            yup_oauth2::InstalledFlowReturnMethod::HTTPRedirect,
         )
         .flow_delegate(Box::new(Authenticator {
             out_channel: ui_channel.clone(),
             connection_notification_id: connection_notif_id.clone(),
         }))
+        .persist_tokens_to_disk(cache_dir)
         .build()
         .await
         .unwrap();
-        let hub = YouTube::new(
-            hyper::Client::builder().build(
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .unwrap()
-                    .https_or_http()
-                    .enable_http1()
-                    .build(),
-            ),
-            auth,
-        );
+        let client =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(
+                    hyper_rustls::HttpsConnectorBuilder::new()
+                        .with_native_roots()
+                        .unwrap()
+                        .https_or_http()
+                        .enable_http1()
+                        .build(),
+                );
+        let hub = YouTube::new(client, auth);
         Self {
             hub,
-            ui_channel,
-            // playlists: HashMap::new(),
             connection_notification_id: connection_notif_id,
         }
     }
@@ -162,7 +164,7 @@ impl Authenticator {
         if need_code {
             let message = format!("Please open {url} and copy back the code");
             let action = UICommand::prompt_user(message);
-            let res = action.send(&self.out_channel).await;
+            let _res = action.send(&self.out_channel).await;
             // TODO: Handle code and send it back
             return Ok(String::new());
         }
