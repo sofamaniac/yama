@@ -1,71 +1,28 @@
-[package]
-name = "yama_v3"
-edition = "2021"
-version = "0.1.0"
+# [package]
+# name = "yama"
+# edition = "2021"
+# version = "0.1.0"
 
-# found here https://github.com/0atman/noboilerplate/blob/main/scripts/37-functional-rust.md
-[profile.release]
-opt-level = 'z'   # Optimize for size.
-lto = true        # Enable Link Time Optimisation
-# codegen-units = 1 # Reduced to increase optimisations.
-strip = "symbols" # Strip symbols from binary
+# # found here https://github.com/0atman/noboilerplate/blob/main/scripts/37-functional-rust.md
+# [profile.release]
+# opt-level = 'z'   # Optimize for size.
+# lto = true        # Enable Link Time Optimisation
+# # codegen-units = 1 # Reduced to increase optimisations.
+# strip = "symbols" # Strip symbols from binary
 
-[features]
-default = ["youtube", "local", "spotify", "mpris", "mpv"]
-local = ["mpv", "dep:metadata"]
-youtube = ["mpv", "dep:open", "dep:google-youtube3"]
-spotify = ["dep:rspotify", "dep:open"]
-mpris = ["dep:zbus"]
-mpv = ["dep:libmpv"]
+# [features]
+# default = ["youtube", "local", "spotify", "mpris", "mpv"]
+# local = ["mpv", "dep:metadata"]
+# youtube = ["mpv", "dep:open", "dep:google-youtube3"]
+# spotify = ["dep:rspotify", "dep:open"]
+# mpris = ["dep:zbus"]
+# mpv = ["dep:libmpv"]
 
-[dependencies]
-anyhow = "1.0.80"
-directories = "5.0.1"
-futures = "0.3.29"
-google-youtube3 = { version = "5.0.3", optional = true }
-iso8601-duration = "0.2.0"
-log = "0.4.20"
-log4rs = "1.2.0"
-metadata = { version = "0.1.8", optional = true}
-open = {version = "5.0.1", optional = true }
-rspotify = {version = "0.12.0", optional = true}
-serde_json = "1.0.111"
-thiserror = "1.0.57"
-tokio-util = "0.7.10"
-
-[dependencies.confy]
-version = "0.5.1"
-features = ["yaml_conf"]
-default-features = false
-
-[dependencies.crossterm]
-version = "0.27.0"
-features = ["event-stream", "serde"]
-
-[dependencies.libmpv]
-git = "https://github.com/ParadoxSpiral/libmpv-rs.git"
-branch = "master"
-features = []
-optional = true
-
-[dependencies.rand]
-version = "0.8.5"
-features = ["std"]
-default-features = false
-
-[dependencies.ratatui]
-version = "0.24.0"
-features = ["serde"]
-
-[dependencies.serde]
-version = "1.0.193"
-features = ["serde_derive"]
-
-[dependencies.tokio]
-version = "1.35.0"
-features = ["full"]
-
-[dependencies.zbus]
-version = "3.14.1"
-features = ["tokio"]
-optional = true
+[workspace]
+members = [
+	"protocol",
+	"protocol/protocol_derive",
+	"tui",
+	"youtube",
+]
+resolver = "2"
